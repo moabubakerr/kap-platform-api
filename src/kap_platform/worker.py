@@ -31,13 +31,33 @@ class RetryLater(Exception):
 Handler = Callable[[asyncpg.Pool, KapClient, Settings, queue.Job], Awaitable[Any]]
 
 
+_USER_NAMES: dict[str, tuple[float, dict[str, str]]] = {}
+USER_NAMES_TTL_S = 300
+
+
+async def user_names(kap: KapClient, tenant_id: str) -> dict[str, str]:
+    """KAP user id → username for a tenant, cached for a few minutes. Empty if not permitted."""
+    cached = _USER_NAMES.get(tenant_id)
+    if cached and time.monotonic() - cached[0] < USER_NAMES_TTL_S:
+        return cached[1]
+    try:
+        names = {u["id"]: u["username"] for u in await kap.list_users(tenant_id)}
+    except KapError as exc:
+        if exc.status not in (403, 404):
+            raise
+        names = {}  # account lacks user:read — jobs keep their ids only
+    _USER_NAMES[tenant_id] = (time.monotonic(), names)
+    return names
+
+
 async def handle_sync_agent_jobs(pool: asyncpg.Pool, kap: KapClient, settings: Settings, job: queue.Job) -> dict[str, int]:
     tenant_id = str(job.tenant_id)
     seen = to_link = 0
+    names = await user_names(kap, tenant_id)
     for agent in await kap.list_agents(tenant_id):
         for j in await kap.recent_agent_jobs(tenant_id, agent["id"], limit=50):
             seen += 1
-            if await store.upsert_kap_job(pool, tenant_id, agent, j):
+            if await store.upsert_kap_job(pool, tenant_id, agent, j, names):
                 await queue.enqueue(pool, "link_trace", {"job_id": j["id"]}, tenant_id=tenant_id, idempotency_key=f"link:{j['id']}")
                 to_link += 1
     return {"jobs_seen": seen, "to_link": to_link}
@@ -48,7 +68,7 @@ async def handle_fetch_job(pool: asyncpg.Pool, kap: KapClient, settings: Setting
     agent_id, job_id = job.payload["agent_id"], job.payload["job_id"]
     data = await kap.get_agent_job(tenant_id, agent_id, job_id)
     agent = {"id": agent_id, "name": job.payload.get("agent_name")}
-    if await store.upsert_kap_job(pool, tenant_id, agent, data):
+    if await store.upsert_kap_job(pool, tenant_id, agent, data, await user_names(kap, tenant_id)):
         await queue.enqueue(pool, "link_trace", {"job_id": job_id}, tenant_id=tenant_id, idempotency_key=f"link:{job_id}")
     return {"status": data["status"]}
 

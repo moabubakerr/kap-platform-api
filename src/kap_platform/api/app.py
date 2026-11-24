@@ -120,12 +120,21 @@ def create_api(settings: Settings, pool_factory=None, kap_factory=None) -> FastA
         return {"items": items, "total": total, "limit": limit, "offset": offset, "has_next": offset + len(items) < total}
 
     @app.get("/api/traces/{job_id}", dependencies=[Depends(require_key)])
-    async def get_trace(job_id: str, p: asyncpg.Pool = Depends(pool)) -> dict[str, Any]:
+    async def get_trace(job_id: str, p: asyncpg.Pool = Depends(pool), k: KapClient = Depends(kap)) -> dict[str, Any]:
         job = await store.get_job(p, job_id)
         if job is None:
             raise _err(404, "not_found", "No such job (it may not have been synced from KAP yet).")
         calls = await store.calls_for_job(p, job_id)
         trace = build_trace(job_id, job["created_at"], job["running_at"], job["finished_at"], calls)
-        return {"job": job, "trace": trace.as_dict()}
+        return {"job": job, "agent": await _agent_summary(k, job["tenant_id"], job["agent_id"]), "trace": trace.as_dict()}
+
+    async def _agent_summary(k: KapClient, tenant_id: str, agent_id: str) -> dict[str, Any] | None:
+        """The agent's limits and model, live from KAP (best effort: the trace stands without it)."""
+        try:
+            a = await k.get_agent(tenant_id, agent_id)
+        except (KapError, KeyError):
+            return None
+        keys = ("id", "name", "type", "model_ref", "collections", "allowed_tools", "timeout_seconds", "max_retries", "request_limit", "tool_calls_limit", "task_priority", "max_in_flight_tasks")
+        return {key: a.get(key) for key in keys}
 
     return app

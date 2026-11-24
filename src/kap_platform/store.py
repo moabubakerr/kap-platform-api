@@ -99,17 +99,19 @@ def _ts(v: Any) -> datetime | None:
     return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
 
 
-async def upsert_kap_job(conn: asyncpg.Pool | asyncpg.Connection, tenant_id: str, agent: dict[str, Any], job: dict[str, Any]) -> bool:
+async def upsert_kap_job(conn: asyncpg.Pool | asyncpg.Connection, tenant_id: str, agent: dict[str, Any], job: dict[str, Any], user_names: dict[str, str] | None = None) -> bool:
     """Insert or update a job from the KAP API. Returns True when it is terminal and still awaits linking."""
+    created_by = job.get("created_by")
     row = await conn.fetchrow(
         """
         insert into kap_job (id, tenant_id, agent_id, agent_name, status, user_prompt, payload, result, error,
-                             retry_count, created_by, created_at, running_at, finished_at, synced_at)
-        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, now())
+                             retry_count, created_by, created_at, running_at, finished_at, created_by_name, synced_at)
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, now())
         on conflict (id) do update set
           status = excluded.status, result = excluded.result, error = excluded.error,
           retry_count = excluded.retry_count, running_at = excluded.running_at,
           finished_at = excluded.finished_at, agent_name = coalesce(excluded.agent_name, kap_job.agent_name),
+          created_by_name = coalesce(excluded.created_by_name, kap_job.created_by_name),
           synced_at = now()
         returning status, trace_status
         """,
@@ -123,10 +125,11 @@ async def upsert_kap_job(conn: asyncpg.Pool | asyncpg.Connection, tenant_id: str
         job.get("result"),
         job.get("error"),
         job.get("retry_count") or 0,
-        job.get("created_by"),
+        created_by,
         _ts(job.get("created_at")),
         _ts(job.get("running_at")),
         _ts(job.get("finished_at")),
+        (user_names or {}).get(str(created_by)) if created_by else None,
     )
     return row["status"] in TERMINAL and row["trace_status"] == "pending"
 
@@ -162,7 +165,7 @@ async def list_jobs(conn: asyncpg.Pool | asyncpg.Connection, tenant_id: str | No
     rows = await conn.fetch(
         """
         select id::text, tenant_id::text, agent_id::text, agent_name, status, user_prompt, error, retry_count,
-               created_by::text, created_at, running_at, finished_at, trace_status, trace_calls,
+               created_by::text, created_by_name, created_at, running_at, finished_at, trace_status, trace_calls,
                count(*) over () as total
           from kap_job where ($1::uuid is null or tenant_id = $1)
          order by created_at desc limit $2 offset $3
@@ -179,7 +182,7 @@ async def get_job(conn: asyncpg.Pool | asyncpg.Connection, job_id: str) -> dict[
     r = await conn.fetchrow(
         """
         select id::text, tenant_id::text, agent_id::text, agent_name, status, user_prompt, payload, result, error,
-               retry_count, created_by::text, created_at, running_at, finished_at, trace_status, trace_calls
+               retry_count, created_by::text, created_by_name, created_at, running_at, finished_at, trace_status, trace_calls
           from kap_job where id = $1
         """,
         job_id,

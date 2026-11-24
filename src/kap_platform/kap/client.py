@@ -111,6 +111,12 @@ class KapClient:
     async def list_agents(self, tenant_id: str) -> list[dict[str, Any]]:
         return [a async for a in self.paginate(tenant_id, "/api/agents")]
 
+    async def get_agent(self, tenant_id: str, agent_id: str) -> dict[str, Any]:
+        return await self.request(tenant_id, "GET", f"/api/agents/{agent_id}")
+
+    async def list_users(self, tenant_id: str) -> list[dict[str, Any]]:
+        return [u async for u in self.paginate(tenant_id, "/api/users")]
+
     async def recent_agent_jobs(self, tenant_id: str, agent_id: str, limit: int = 50) -> list[dict[str, Any]]:
         return [j async for j in self.paginate(tenant_id, f"/api/agents/{agent_id}/jobs", {"sort": "-created_at"}, page_size=min(limit, 200), max_items=limit)]
 
