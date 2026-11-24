@@ -67,6 +67,8 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # httpx logs every request at INFO; the worker polls KAP every few seconds.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = get_settings()
 
     if args.cmd == "migrate":
