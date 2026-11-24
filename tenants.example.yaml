@@ -1,0 +1,18 @@
+# KAP tenants managed by the platform layer, and how it signs in to KAP for each.
+# No secrets here: each auth block names the environment variable that holds them.
+#
+# m2m   — KAP service account + OAuth client (POST /oauth/token). Requires KAP's
+#         M2M installation parameter to be enabled. Preferred.
+# token — legacy KAP user API token (admin panel → user → Create API Token).
+tenants:
+  - id: 71b6c98a-7f7a-4a8b-ab31-132c85bdc88b
+    name: sandbox
+    auth:
+      type: token
+      token_env: KAP_TOKEN_SANDBOX
+  # - id: a81e92d4-9541-433a-b295-c869b5dbaf17
+  #   name: SCEAI
+  #   auth:
+  #     type: m2m
+  #     client_id: <oauth client id of the SCEAI platform service account>
+  #     client_secret_env: KAP_M2M_SECRET_SCEAI

@@ -1,0 +1,83 @@
+# KAP platform layer on the test stand, next to KAP (project sceai-stand).
+#
+#   cp .env.example .env            # set passwords, keys, KAP tokens / M2M secrets
+#   cp tenants.example.yaml config/tenants.yaml
+#   docker compose -f docker-compose.stand.yml up -d
+#
+# Services join KAP's network (sceai-stand_default) under the names
+# platform-gateway and platform-api. Both names must be on KAP's
+# OUTBOUND_PRIVATE_ALLOWLIST, or KAP refuses to call them (verified 24 Nov 2026).
+name: kap-platform
+
+x-app: &app
+  image: kap-platform:0.1.0
+  build: .
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    PLATFORM_DATABASE_URL: postgresql://platform:${PLATFORM_DB_PASSWORD}@platform-db:5432/platform
+    PLATFORM_KAP_BASE_URL: http://sceai-stand-api-1:8000
+    PLATFORM_PUBLIC_BASE_URL: http://platform-api:8080
+  volumes:
+    - ./config:/app/config:ro
+  depends_on:
+    platform-migrate:
+      condition: service_completed_successfully
+
+services:
+  platform-db:
+    image: postgres:17.11-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: platform
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: ${PLATFORM_DB_PASSWORD}
+    volumes:
+      - platform_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform -d platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [platform]
+
+  platform-migrate:
+    <<: *app
+    restart: "no"
+    command: ["migrate"]
+    depends_on:
+      platform-db:
+        condition: service_healthy
+    networks: [platform]
+
+  platform-api:
+    <<: *app
+    command: ["api", "--port", "8080"]
+    ports:
+      - "127.0.0.1:8180:8080"   # console / SSH tunnel; not exposed beyond the VM
+    networks:
+      platform: {}
+      kap:
+        aliases: [platform-api]
+
+  platform-gateway:
+    <<: *app
+    command: ["gateway", "--port", "8090"]
+    networks:
+      platform: {}
+      kap:
+        aliases: [platform-gateway]
+
+  platform-worker:
+    <<: *app
+    command: ["worker", "--concurrency", "4"]
+    networks: [platform, kap]
+
+networks:
+  platform: {}
+  kap:
+    external: true
+    name: sceai-stand_default
+
+volumes:
+  platform_db: {}

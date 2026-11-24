@@ -1,0 +1,29 @@
+[project]
+name = "kap-platform"
+version = "0.1.0"
+description = "Platform layer on top of the KAP API: model gateway, traces, job queue, workflows."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30",
+  "httpx>=0.27,<1",
+  "asyncpg>=0.29",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "pyyaml>=6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kap_platform"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
