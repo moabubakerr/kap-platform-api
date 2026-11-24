@@ -97,6 +97,18 @@ def create_api(settings: Settings, pool_factory=None, kap_factory=None) -> FastA
         # KAP retries failed deliveries; the idempotency key makes repeats harmless.
         await queue.enqueue(p, "fetch_job", {"agent_id": agent_id, "job_id": job_id}, tenant_id=tenant_id, idempotency_key=f"fetch:{job_id}:{body.get('status')}", priority=1)
 
+    # ------------------------------------------------------------ agents (for the playground)
+    AGENT_FIELDS = ("id", "name", "type", "description", "model_ref", "collections", "allowed_tools", "config", "timeout_seconds", "request_limit", "tool_calls_limit")
+
+    @app.get("/api/t/{tenant_id}/agents", dependencies=[Depends(require_key)])
+    async def list_agents(tenant_id: str, k: KapClient = Depends(kap)) -> dict[str, Any]:
+        try:
+            agents = await k.list_agents(tenant_id)
+        except KeyError:
+            raise _err(404, "tenant_not_configured", "This tenant is not configured in the platform layer.")
+        items = [{f: a.get(f) for f in AGENT_FIELDS} for a in agents]
+        return {"items": items, "total": len(items), "limit": len(items), "offset": 0, "has_next": False}
+
     # ------------------------------------------------------------ submit through the layer
     @app.post("/api/t/{tenant_id}/agents/{agent_id}/jobs", status_code=201, dependencies=[Depends(require_key)])
     async def submit_job(tenant_id: str, agent_id: str, body: SubmitJobIn, p: asyncpg.Pool = Depends(pool), k: KapClient = Depends(kap)) -> dict[str, Any]:
