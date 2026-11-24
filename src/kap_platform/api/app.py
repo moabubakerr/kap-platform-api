@@ -8,6 +8,7 @@ Conventions follow KAP so the console sees one platform: pages as
   POST /api/t/{tenant_id}/agents/{agent_id}/jobs         submit a KAP agent job with our callback
   GET  /api/traces                                       mirrored agent jobs with trace status
   GET  /api/traces/{job_id}                              one job with its trace steps
+  *    /api/t/{tenant_id}/kap/{path}                      KAP passthrough for the console hubs (kap_proxy.py)
 
 Console auth in slice 1 is a static bearer key (PLATFORM_API_KEYS); it is
 replaced by the platform's own users, groups and grants in a later slice.
@@ -20,10 +21,11 @@ from typing import Any
 
 import asyncpg
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from .. import queue, store
+from . import kap_proxy
 from ..config import Settings
 from ..kap.client import KapClient, KapError
 from ..traces.build import build_trace
@@ -124,6 +126,19 @@ def create_api(settings: Settings, pool_factory=None, kap_factory=None) -> FastA
         )
         await store.upsert_kap_job(p, tenant_id, {"id": agent_id}, job)
         return job
+
+    # ------------------------------------------------------------ KAP passthrough (console hubs)
+    @app.api_route("/api/t/{tenant_id}/kap/{path:path}", methods=["GET", "POST", "PATCH", "PUT", "DELETE"], dependencies=[Depends(require_key)])
+    async def kap_passthrough(tenant_id: str, path: str, request: Request, k: KapClient = Depends(kap)) -> Response:
+        try:
+            k.tenant(tenant_id)
+            return await kap_proxy.forward(k, tenant_id, request.method, path, request)
+        except KeyError:
+            raise _err(404, "tenant_not_configured", "This tenant is not configured in the platform layer.")
+        except kap_proxy.ProxyRefused as exc:
+            raise _err(exc.status, exc.kind, exc.message)
+        except ValueError:
+            raise _err(422, "validation_error", "The request body is not valid JSON.")
 
     # ------------------------------------------------------------ traces
     @app.get("/api/traces", dependencies=[Depends(require_key)])

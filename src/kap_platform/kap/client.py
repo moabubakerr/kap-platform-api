@@ -78,7 +78,15 @@ class KapClient:
             return body["access_token"]
 
     # ------------------------------------------------------------------ requests
-    async def request(self, tenant_id: str, method: str, path: str, *, params: dict[str, Any] | None = None, json: Any = None) -> Any:
+    async def request(self, tenant_id: str, method: str, path: str, *, params: Any = None, json: Any = None) -> Any:
+        r = await self.request_raw(tenant_id, method, path, params=params, json=json)
+        if r.status_code >= 400:
+            raise KapError(r.status_code, _body(r), r.headers.get("x-request-id"))
+        return r.json() if r.content else None
+
+    async def request_raw(self, tenant_id: str, method: str, path: str, *, params: Any = None, json: Any = None) -> httpx.Response:
+        """One KAP call with auth, the tenant header, one M2M re-auth and one 429 wait.
+        Returns the response as is (errors included), for passthrough."""
         tenant = self.tenant(tenant_id)
         for attempt in range(2):
             headers = {"Authorization": f"Bearer {await self._bearer(tenant)}", "X-Tenant-ID": tenant.id}
@@ -89,10 +97,8 @@ class KapClient:
             if r.status_code == 429 and attempt == 0:
                 await asyncio.sleep(min(float(r.headers.get("Retry-After", "1")), 10.0))
                 continue
-            if r.status_code >= 400:
-                raise KapError(r.status_code, _body(r), r.headers.get("x-request-id"))
-            return r.json() if r.content else None
-        raise KapError(r.status_code, _body(r), r.headers.get("x-request-id"))
+            return r
+        return r
 
     async def paginate(self, tenant_id: str, path: str, params: dict[str, Any] | None = None, page_size: int = 200, max_items: int | None = None) -> AsyncIterator[dict[str, Any]]:
         offset, seen = 0, 0
