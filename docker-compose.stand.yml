@@ -18,6 +18,9 @@ x-app: &app
     PLATFORM_DATABASE_URL: postgresql://platform:${PLATFORM_DB_PASSWORD}@platform-db:5432/platform
     PLATFORM_KAP_BASE_URL: http://sceai-stand-api-1:8000
     PLATFORM_PUBLIC_BASE_URL: http://platform-api:8080
+    # PostgreSQL data source: PLATFORM_SECRET_KEY and PLATFORM_S3_* come from .env.
+    # api and worker reach the stand's S3 (s3:9000) and the source database
+    # (scai-chatbot-postgres-1:5432) over KAP's network below.
   volumes:
     - ./config:/app/config:ro
   depends_on:

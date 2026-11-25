@@ -79,6 +79,18 @@ class Settings(BaseSettings):
     lease_s: int = 60
     correlation_slack_s: float = 2.0
 
+    # PostgreSQL data source
+    secret_key: str = ""  # Fernet key (urlsafe base64, 32 bytes) for stored source passwords
+    s3_url: str = "http://s3:9000"  # S3 endpoint the platform uploads to (path addressing)
+    s3_kap_url: str = ""  # S3 endpoint as KAP's connector sees it; empty = same as s3_url
+    s3_access_key: str = ""
+    s3_secret_key: str = ""
+    s3_bucket: str = "platform-exports"
+    s3_region: str = "us-east-1"
+    pg_export_poll_s: int = 10  # how often an export checks KAP for its pipeline job
+    pg_export_wait_s: int = 900  # give up waiting for KAP after this long
+    kap_embedding_model_ref: str = "embed_default"  # pipelines the platform creates
+
     def tenants(self) -> list[Tenant]:
         return load_tenants(self.tenants_file)
 

@@ -9,6 +9,7 @@ Conventions follow KAP so the console sees one platform: pages as
   GET  /api/traces                                       mirrored agent jobs with trace status
   GET  /api/traces/{job_id}                              one job with its trace steps
   *    /api/t/{tenant_id}/kap/{path}                      KAP passthrough for the console hubs (kap_proxy.py)
+  *    /api/t/{tenant_id}/pg-sources|pg-datasets|pg-exports  PostgreSQL data source (pgsource/api.py)
 
 Console auth in slice 1 is a static bearer key (PLATFORM_API_KEYS); it is
 replaced by the platform's own users, groups and grants in a later slice.
@@ -21,10 +22,12 @@ from typing import Any
 
 import asyncpg
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from .. import queue, store
+from ..pgsource import api as pg_api
 from . import kap_proxy
 from ..config import Settings
 from ..kap.client import KapClient, KapError
@@ -59,6 +62,13 @@ def create_api(settings: Settings, pool_factory=None, kap_factory=None) -> FastA
     async def http_error(_: Request, exc: HTTPException) -> JSONResponse:
         body = exc.detail if isinstance(exc.detail, dict) and "type" in exc.detail else {"type": "error", "message": str(exc.detail), "data": {}}
         return JSONResponse(body, status_code=exc.status_code)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+        errors = [{"loc": list(e.get("loc", [])), "msg": e.get("msg"), "type": e.get("type")} for e in exc.errors()]
+        first = errors[0] if errors else {"loc": [], "msg": "invalid request"}
+        where = ".".join(str(p) for p in first["loc"] if p != "body")
+        return JSONResponse({"type": "validation_error", "message": f"{where}: {first['msg']}" if where else str(first["msg"]), "data": {"errors": errors}}, status_code=422)
 
     @app.exception_handler(KapError)
     async def kap_error(_: Request, exc: KapError) -> JSONResponse:
@@ -145,8 +155,11 @@ def create_api(settings: Settings, pool_factory=None, kap_factory=None) -> FastA
         except ValueError:
             raise _err(422, "validation_error", "The request body is not valid JSON.")
 
+    # ------------------------------------------------------------ PostgreSQL data source
+    pg_api.register(app, settings, require_key, _err)
+
     # ------------------------------------------------------------ traces
-    @app.get("/api/traces", dependencies=[Depends(require_key)])
+    @app.get("/api/traces",dependencies=[Depends(require_key)])
     async def list_traces(tenant_id: str | None = None, limit: int = Query(20, ge=1, le=200), offset: int = Query(0, ge=0), p: asyncpg.Pool = Depends(pool)) -> dict[str, Any]:
         items, total = await store.list_jobs(p, tenant_id, limit, offset)
         return {"items": items, "total": total, "limit": limit, "offset": offset, "has_next": offset + len(items) < total}

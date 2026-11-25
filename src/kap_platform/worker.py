@@ -4,6 +4,10 @@ Job kinds (slice 1):
   sync_agent_jobs  {}                                  — mirror recent agent jobs of a tenant from KAP
   fetch_job        {agent_id, job_id}                  — refresh one job (after a KAP callback)
   link_trace       {job_id}                            — link recorded model calls to a finished job
+  pg_export        {run_id}                            — export a PostgreSQL dataset to S3 for KAP (pgsource/export.py)
+  pg_export_watch  {run_id}                            — follow KAP's pipeline job for that export (re-enqueued every ~10 s)
+
+The scheduler tick (every sync_interval_s) also starts scheduled PostgreSQL exports.
 """
 from __future__ import annotations
 
@@ -19,6 +23,7 @@ import asyncpg
 from . import queue, store
 from .config import Settings
 from .kap.client import KapClient, KapError
+from .pgsource import export as pg_export
 from .traces.correlate import link_job
 
 log = logging.getLogger(__name__)
@@ -98,6 +103,8 @@ HANDLERS: dict[str, Handler] = {
     "sync_agent_jobs": handle_sync_agent_jobs,
     "fetch_job": handle_fetch_job,
     "link_trace": handle_link_trace,
+    "pg_export": pg_export.handle_pg_export,
+    "pg_export_watch": pg_export.handle_pg_export_watch,
 }
 
 
@@ -138,6 +145,11 @@ class Worker:
             for tenant in self.settings.tenants():
                 if tenant.sync_jobs:
                     await queue.enqueue(self.pool, "sync_agent_jobs", tenant_id=tenant.id, idempotency_key=f"sync:{bucket}", max_attempts=1)
+            if "pg_export" in self.handlers:
+                try:
+                    await pg_export.schedule_tick(self.pool, self.settings)
+                except Exception:
+                    log.exception("scheduled PostgreSQL exports could not be started")
             await self._sleep(interval)
 
     async def _housekeeping(self) -> None:
