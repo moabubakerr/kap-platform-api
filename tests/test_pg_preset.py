@@ -65,3 +65,14 @@ def test_narratives_prefer_published_and_split_languages():
 def test_no_analysis_table_gives_header_only():
     res = presets.map_scai(DETAILS, VALUES, None)
     assert res.narratives == [] and any("header only" in p for p in res.problems)
+
+
+def test_national_overall_is_qatar():
+    # scai_indicators labels Qatar's own values "National / Overall" (6,569 of 9,497 on the stand)
+    for v in ("National / Overall", " national / overall ", "", None, "Qatar"):
+        assert presets.country_of(v) is None
+    assert presets.country_of("KSA") == "KSA"
+    values = [dict(r, country_en="National / Overall") if not r.get("country_en") else r for r in VALUES]
+    res = presets.map_scai(DETAILS, values, ANALYSIS, published_only=True)
+    ids = {r[0] for r in res.registry}
+    assert A in ids and not any(i.endswith("national_overall") for i in ids)

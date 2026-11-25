@@ -55,7 +55,7 @@ NARRATIVES_SQL = """
 select a.analysis_id, a.source as origin,
        coalesce(v.indicator_detail_id, d.indicator_detail_id) as indicator_detail_id,
        coalesce(v.period_date, p.period_date) as period_date,
-       lower(coalesce(v.granularity, p.granularity)) as granularity,
+       lower(coalesce(v.granularity, p.granularity, p.interval_en)) as granularity,
        nullif(btrim(coalesce(v.country_en, p.country_en)), '') as country_en,
        a.summary_en, a.detailed_analysis_en, a.npc_analysis_en, a.benchmark_en,
        a.summary_ar, a.detailed_analysis_ar, a.npc_analysis_ar, a.benchmark_ar
@@ -69,7 +69,9 @@ select a.analysis_id, a.source as origin,
  order by a.analysis_id
 """
 
-DOMESTIC = ("", "qatar")
+# Qatar's own (domestic) values. In scai_indicators they are labelled "National / Overall"
+# (6,569 of 9,497 values, seen on the stand 25 Nov 2026); blank/Qatar kept for other loads.
+DOMESTIC = ("", "qatar", "national / overall", "national", "overall", "state of qatar")
 # JSON placeholders for the CMS columns, as in the sandbox registry
 CMS_EMPTY = {"cms_benchmark_countries": "[]", "cms_country": "", "cms_detail": "{}", "cms_intervals": "[]", "cms_parent": "{}", "source_document_metadata": "{}", "source_documents": "[]"}
 
@@ -174,6 +176,7 @@ def map_scai(details: Iterable[Mapping[str, Any]], values: Iterable[Mapping[str,
         for a in analysis:
             key = _text(a.get("indicator_detail_id"))
             gran = _text(a.get("granularity")).lower()
+            gran = {"annual": "yearly", "year": "yearly", "quarter": "quarterly", "month": "monthly"}.get(gran, gran)
             cms = cms_ids.get(key)
             period = format_period(a.get("period_date"), gran) if gran in FREQUENCY else None
             if not cms or period is None:
