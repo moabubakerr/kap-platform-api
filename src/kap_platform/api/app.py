@@ -124,7 +124,12 @@ def create_api(settings: Settings, pool_factory=None, kap_factory=None) -> FastA
             callback_url=f"{settings.public_base_url.rstrip('/')}/hooks/kap/t/{tenant_id}/agents/{agent_id}/jobs",
             callback_headers={"X-Platform-Hook-Token": settings.hook_token} if settings.hook_token else None,
         )
-        await store.upsert_kap_job(p, tenant_id, {"id": agent_id}, job)
+        # store the agent's name with the job now, so traces never show a bare id until the next sync
+        try:
+            name = (await k.get_agent(tenant_id, agent_id)).get("name")
+        except KapError:
+            name = None
+        await store.upsert_kap_job(p, tenant_id, {"id": agent_id, "name": name}, job)
         return job
 
     # ------------------------------------------------------------ KAP passthrough (console hubs)
