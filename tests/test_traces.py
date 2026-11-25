@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from kap_platform.traces.build import Call, build_trace, tool_source
+from kap_platform.traces.build import Call, build_trace, tool_failed, tool_source
 from kap_platform.traces.correlate import CallKey, JobWindow, link_job
 from kap_platform.traces.extract import parse_reply, parse_sse, summarize_request, tool_results
 
@@ -139,3 +139,15 @@ def test_link_job_none_without_prompt_or_window(planner_run):
     assert link_job(_window(job, user_prompt=None), _keys(raw, job["tenant_id"]), []).status == "none"
     assert link_job(_window(job, finished_at=None), _keys(raw, job["tenant_id"]), []).status == "none"
     assert SYSTEM  # fixture sanity
+
+
+def test_tool_error_text_is_a_failure_not_data():
+    # hybrid_search without entity_id on the stand, 25 Nov 2026
+    assert tool_failed('1 validation error:\n```json\n[{"type": "missing", "loc": ["entity_id"], "msg": "Field required"}]')
+    assert tool_failed("VectorIndexUnavailableError: index not ready")
+    assert tool_failed("Error: collection not found")
+    assert tool_failed({"error": "not found"})
+    assert not tool_failed('[{"indicator_id": "5456bc3f"}]')
+    assert not tool_failed({"value": "32.04", "unit": "%"})
+    assert not tool_failed("The errors section of the report lists three items.")
+    assert not tool_failed([])

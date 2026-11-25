@@ -13,7 +13,23 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
 
+import re
+
 from .extract import parse_reply, tool_results, try_json
+
+# KAP hands tool errors back to the model as ordinary tool text, e.g.
+# "1 validation error: ... Field required" (hybrid_search without entity_id,
+# seen on the stand 25 Nov 2026). Those are failures, not data.
+_TOOL_ERROR = re.compile(r"^\s*(\d+ validation errors?\b|error\b|traceback\b|exception\b|\w+(error|exception)\b:)", re.IGNORECASE)
+
+
+def tool_failed(result: Any) -> bool:
+    """Whether a tool result is an error message rather than data."""
+    if isinstance(result, str):
+        return bool(_TOOL_ERROR.match(result))
+    if isinstance(result, dict):
+        return set(result) <= {"error", "detail", "message", "type", "code"} and ("error" in result or "detail" in result)
+    return False
 
 
 @dataclass
@@ -130,6 +146,7 @@ def build_trace(
             t_end = nxt.started_at if nxt else finished_at
             for tc in reply.tool_calls:
                 has_result = tc.id in results if tc.id else False
+                status = ("error" if tool_failed(results[tc.id]) else "ok") if has_result else "no_result"
                 trace.steps.append(
                     Step(
                         seq,
@@ -141,7 +158,7 @@ def build_trace(
                         source=tool_source(tc.name),
                         input=try_json(tc.arguments),
                         output=try_json(results[tc.id]) if has_result else None,
-                        status="ok" if has_result else "no_result",
+                        status=status,
                         tool_call_id=tc.id,
                     )
                 )
