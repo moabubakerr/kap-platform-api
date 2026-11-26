@@ -7,11 +7,13 @@
   GET/POST            /api/t/{tid}/eval-runs                      ?set_id=&agent_id= ; POST starts a run
   GET/DELETE          /api/t/{tid}/eval-runs/{id}                 GET includes one result per question
   POST                /api/t/{tid}/eval-runs/{id}/cancel
+  GET/POST            /api/t/{tid}/eval-schedules                 ?set_id= ; run a test set on a schedule and/or after new data
+  PATCH/DELETE        /api/t/{tid}/eval-schedules/{id}
 """
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
@@ -20,7 +22,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from ..config import Settings
 from ..kap.client import KapClient, KapError
-from . import runner, score
+from ..workflows import runner as wf_runner
+from . import runner, score, start
 from .store import ACTIVE, Conflict, InUse
 
 NAME = r"^\S(.{0,98}\S)?$"
@@ -85,14 +88,42 @@ class CasesIn(BaseModel):
     replace: bool = False
 
 
-class RunIn(BaseModel):
-    set_id: str
-    agent_id: str
-    label: str = Field("", max_length=200)
+class RunOptions(BaseModel):
     judge: bool = True
     min_correctness: int = Field(4, ge=0, le=5)
     min_grounding: int = Field(0, ge=0, le=5)
     parallel: int = Field(2, ge=1, le=10)
+
+
+class RunIn(RunOptions):
+    set_id: str
+    agent_id: str | None = None
+    workflow_id: str | None = Field(None, max_length=41)
+    version: str | None = Field(None, max_length=20)  # workflow version; default: the published one
+    label: str = Field("", max_length=200)
+
+
+class ScheduleIn(BaseModel):
+    set_id: str
+    agent_id: str | None = None
+    workflow_id: str | None = Field(None, max_length=41)
+    every_minutes: int | None = Field(None, ge=60, le=60 * 24 * 31)
+    on_data: bool = False
+    min_pass_rate: float | None = Field(None, ge=0, le=1)
+    options: RunOptions = Field(default_factory=RunOptions)
+    enabled: bool = True
+
+
+class SchedulePatch(BaseModel):
+    every_minutes: int | None = Field(None, ge=60, le=60 * 24 * 31)
+    on_data: bool | None = None
+    min_pass_rate: float | None = Field(None, ge=0, le=1)
+    options: RunOptions | None = None
+    enabled: bool | None = None
+
+
+def schedule_out(s: dict[str, Any]) -> dict[str, Any]:
+    return {k: s.get(k) for k in ("id", "set_id", "target_kind", "agent_id", "workflow_id", "every_minutes", "on_data", "min_pass_rate", "options", "enabled", "next_run_at", "data_seen_at", "last_run_id", "created_at", "updated_at")}
 
 
 # ---------------------------------------------------------------- output shapes
@@ -110,13 +141,18 @@ def case_out(c: dict[str, Any]) -> dict[str, Any]:
 
 def result_out(r: dict[str, Any]) -> dict[str, Any]:
     return {k: r.get(k) for k in (
-        "id", "case_id", "position", "question", "expected", "must_include", "must_not_include", "status", "job_id", "job_status",
+        "id", "case_id", "position", "question", "expected", "must_include", "must_not_include", "status", "job_id", "wf_run_id", "job_status",
         "answer", "checks", "judge", "passed", "reason", "metrics", "error", "submitted_at", "answered_at", "scored_at",
     )}
 
 
 def run_out(r: dict[str, Any], results: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    out = {k: r.get(k) for k in ("id", "set_id", "set_name", "agent_id", "agent_name", "agent", "label", "status", "summary", "error", "created_at", "started_at", "finished_at")}
+    out = {k: r.get(k) for k in (
+        "id", "set_id", "set_name", "agent_id", "agent_name", "agent", "label", "status", "summary", "error", "created_at", "started_at", "finished_at",
+        "target_kind", "workflow_id", "version", "trigger", "regressed", "regress_reason",
+    )}
+    out["target_kind"] = out["target_kind"] or "agent"
+    out["trigger"] = out["trigger"] or "manual"
     out["options"] = score.options_with_defaults(r.get("options"))
     if results is not None:
         out["results"] = [result_out(x) for x in results]
@@ -238,7 +274,8 @@ def register(app: FastAPI, settings: Settings, require_key: Callable, err: Calla
     # ------------------------------------------------------------ runs
     @router.get("/eval-runs")
     async def list_runs(
-        set_id: str | None = None, agent_id: str | None = None, limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
+        set_id: str | None = None, agent_id: str | None = None, workflow_id: str | None = None,
+        limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
         tid: str = Depends(tenant), st: Any = Depends(store),
     ) -> dict[str, Any]:
         for v, what in ((set_id, "test set"), (agent_id, "agent")):
@@ -247,33 +284,81 @@ def register(app: FastAPI, settings: Settings, require_key: Callable, err: Calla
                     uuid.UUID(v)
                 except ValueError:
                     return _page([], 0, limit, offset)
-        items, total = await st.list_runs(tid, set_id, agent_id, limit, offset)
+        items, total = await st.list_runs(tid, set_id, agent_id, limit, offset, workflow_id)
         return _page([run_out(r) for r in items], total, limit, offset)
 
     @router.post("/eval-runs", status_code=201)
     async def start_run(body: RunIn, request: Request, tid: str = Depends(tenant), st: Any = Depends(store)) -> dict[str, Any]:
-        s = await get_set(st, tid, body.set_id)
+        await get_set(st, tid, body.set_id)
         check_id(body.agent_id, "agent")
-        cases = await st.list_cases(s["id"])
-        if not cases:
-            raise err(422, "validation_error", "The test set has no questions yet.")
-        kap: KapClient = request.app.state.kap
+        options = body.model_dump(include={"judge", "min_correctness", "min_grounding", "parallel"})
         try:
-            agent = await kap.get_agent(tid, body.agent_id)
-        except KapError as exc:
-            if exc.status == 404:
-                raise err(404, "not_found", "KAP has no such agent.")
-            raise
-        if await st.has_active_run(tid, s["id"], body.agent_id):
-            raise err(409, "conflict", "This test set is already being run against this agent. Wait for it to finish or cancel it.")
-        options = {"judge": body.judge, "min_correctness": body.min_correctness, "min_grounding": body.min_grounding, "parallel": body.parallel}
-        rid = await st.create_run(tid, {
-            "set_id": s["id"], "agent_id": body.agent_id, "agent_name": agent.get("name"),
-            "agent": {k: agent.get(k) for k in AGENT_KEYS}, "label": body.label.strip(), "options": options,
-        }, cases)
-        run = await get_run(st, tid, rid)
-        await runner.enqueue_tick(request.app.state.pool, run, 0)
-        return run_out(run, await st.results(rid))
+            rid = await start.start_eval_run(
+                st, request.app.state.kap, request.app.state.pool, tid, body.set_id,
+                agent_id=body.agent_id, workflow_id=body.workflow_id, version=body.version, label=body.label, options=options,
+            )
+        except start.EvalRefused as exc:
+            raise err(exc.status, exc.kind, exc.message)
+        return run_out(await get_run(st, tid, rid), await st.results(rid))
+
+    # ------------------------------------------------------------ schedules
+    async def get_schedule(st: Any, tid: str, sid: str) -> dict[str, Any]:
+        check_id(sid, "schedule")
+        s = await st.get_schedule(tid, sid)
+        if s is None:
+            raise err(404, "not_found", "No such schedule.")
+        return s
+
+    @router.get("/eval-schedules")
+    async def list_schedules(set_id: str | None = None, tid: str = Depends(tenant), st: Any = Depends(store)) -> dict[str, Any]:
+        check_id(set_id, "test set")
+        items = [schedule_out(s) for s in await st.list_schedules(tid, set_id)]
+        return _page(items, len(items), len(items), 0)
+
+    @router.post("/eval-schedules", status_code=201)
+    async def create_schedule(body: ScheduleIn, request: Request, tid: str = Depends(tenant), st: Any = Depends(store)) -> dict[str, Any]:
+        await get_set(st, tid, body.set_id)
+        if bool(body.agent_id) == bool(body.workflow_id):
+            raise err(422, "validation_error", "Choose an agent or a workflow to evaluate.")
+        if not body.every_minutes and not body.on_data:
+            raise err(422, "validation_error", "Choose when to run: on a schedule, after new data, or both.")
+        check_id(body.agent_id, "agent")
+        if body.agent_id:
+            try:
+                await request.app.state.kap.get_agent(tid, body.agent_id)
+            except KapError as exc:
+                if exc.status == 404:
+                    raise err(404, "not_found", "KAP has no such agent.")
+                raise
+        elif await wf_runner.SERVICES.store(request.app.state.pool).get_workflow(tid, body.workflow_id) is None:
+            raise err(404, "not_found", "No such workflow.")
+        now = datetime.now(timezone.utc)
+        sid = await st.create_schedule(tid, {
+            "set_id": body.set_id, "target_kind": "agent" if body.agent_id else "workflow", "agent_id": body.agent_id, "workflow_id": body.workflow_id,
+            "every_minutes": body.every_minutes, "on_data": body.on_data, "min_pass_rate": body.min_pass_rate, "options": body.options.model_dump(),
+            "enabled": body.enabled, "next_run_at": now + timedelta(minutes=body.every_minutes) if body.every_minutes else None,
+        })
+        return schedule_out(await get_schedule(st, tid, sid))
+
+    @router.patch("/eval-schedules/{sched_id}")
+    async def patch_schedule(sched_id: str, body: SchedulePatch, tid: str = Depends(tenant), st: Any = Depends(store)) -> dict[str, Any]:
+        s = await get_schedule(st, tid, sched_id)
+        fields = body.model_dump(exclude_unset=True)
+        if "options" in fields and fields["options"] is None:
+            fields.pop("options")
+        every = fields.get("every_minutes", s["every_minutes"])
+        if not every and not fields.get("on_data", s["on_data"]):
+            raise err(422, "validation_error", "Choose when to run: on a schedule, after new data, or both.")
+        if "every_minutes" in fields:
+            fields["next_run_at"] = datetime.now(timezone.utc) + timedelta(minutes=every) if every else None
+        await st.update_schedule(sched_id, fields)
+        return schedule_out(await get_schedule(st, tid, sched_id))
+
+    @router.delete("/eval-schedules/{sched_id}", status_code=204)
+    async def delete_schedule(sched_id: str, tid: str = Depends(tenant), st: Any = Depends(store)) -> Response:
+        await get_schedule(st, tid, sched_id)
+        await st.delete_schedule(tid, sched_id)
+        return Response(status_code=204)
 
     @router.get("/eval-runs/{run_id}")
     async def read_run(run_id: str, tid: str = Depends(tenant), st: Any = Depends(store)) -> dict[str, Any]:

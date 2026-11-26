@@ -32,7 +32,7 @@ class MemoryEvalStore:
         runs = sorted((r for r in self.db["runs"].values() if r["set_id"] == s["id"]), key=lambda r: r["created_at"], reverse=True)
         last = runs[0] if runs else None
         return {**copy.deepcopy(s), "case_count": sum(1 for c in self.db["cases"].values() if c["set_id"] == s["id"]),
-                "last_run": {k: last[k] for k in ("id", "status", "agent_name", "summary", "created_at", "finished_at")} if last else None}
+                "last_run": {k: last[k] for k in ("id", "status", "agent_name", "target_kind", "workflow_id", "version", "regressed", "summary", "created_at", "finished_at")} if last else None}
 
     async def list_sets(self, tenant_id):
         return [self._set_row(s) for s in sorted(self.db["sets"].values(), key=lambda s: s["name"]) if s["tenant_id"] == tenant_id]
@@ -91,21 +91,24 @@ class MemoryEvalStore:
     # runs
     async def create_run(self, tenant_id, fields, cases):
         rid = str(uuid.uuid4())
-        self.db["runs"][rid] = {"id": rid, "tenant_id": tenant_id, "set_id": fields["set_id"], "agent_id": fields["agent_id"], "agent_name": fields.get("agent_name"),
+        self.db["runs"][rid] = {"id": rid, "tenant_id": tenant_id, "set_id": fields["set_id"], "agent_id": fields.get("agent_id"), "agent_name": fields.get("agent_name"),
                                 "agent": fields.get("agent"), "label": fields.get("label") or "", "options": fields.get("options") or {}, "status": "queued",
-                                "summary": None, "polls": 0, "error": None, "created_at": now(), "started_at": None, "finished_at": None}
+                                "summary": None, "polls": 0, "error": None, "created_at": now(), "started_at": None, "finished_at": None,
+                                "target_kind": fields.get("target_kind") or "agent", "workflow_id": fields.get("workflow_id"), "version": fields.get("version"),
+                                "trigger": fields.get("trigger") or "manual", "regressed": None, "regress_reason": None}
         for i, c in enumerate(cases):
             xid = str(uuid.uuid4())
             self.db["results"][xid] = {"id": xid, "run_id": rid, "case_id": c["id"], "position": i, "question": c["question"], "expected": c.get("expected") or "",
                                        "must_include": c.get("must_include") or [], "must_not_include": c.get("must_not_include") or [], "status": "pending",
-                                       **{k: None for k in ("job_id", "job_status", "answer", "checks", "judge", "passed", "reason", "metrics", "error", "submitted_at", "answered_at", "scored_at")}}
+                                       **{k: None for k in ("job_id", "wf_run_id", "job_status", "answer", "checks", "judge", "passed", "reason", "metrics", "error", "submitted_at", "answered_at", "scored_at")}}
         return rid
 
     def _run_row(self, r):
         return {**copy.deepcopy(r), "set_name": self.db["sets"][r["set_id"]]["name"]}
 
-    async def list_runs(self, tenant_id, set_id, agent_id, limit, offset):
-        rs = [r for r in self.db["runs"].values() if r["tenant_id"] == tenant_id and (not set_id or r["set_id"] == set_id) and (not agent_id or r["agent_id"] == agent_id)]
+    async def list_runs(self, tenant_id, set_id, agent_id, limit, offset, workflow_id=None):
+        rs = [r for r in self.db["runs"].values() if r["tenant_id"] == tenant_id and (not set_id or r["set_id"] == set_id) and (not agent_id or r["agent_id"] == agent_id)
+              and (not workflow_id or r["workflow_id"] == workflow_id)]
         rs.sort(key=lambda r: r["created_at"], reverse=True)
         return [self._run_row(r) for r in rs[offset:offset + limit]], len(rs)
 
@@ -119,8 +122,42 @@ class MemoryEvalStore:
     async def delete_run(self, tenant_id, run_id):
         self.db["runs"].pop(run_id, None)
 
-    async def has_active_run(self, tenant_id, set_id, agent_id):
-        return any(r["set_id"] == set_id and r["agent_id"] == agent_id and r["status"] in ACTIVE for r in self.db["runs"].values())
+    async def has_active_run(self, tenant_id, set_id, target_kind, target_id):
+        col = "agent_id" if target_kind == "agent" else "workflow_id"
+        return any(r["set_id"] == set_id and r["target_kind"] == target_kind and r[col] == target_id and r["status"] in ACTIVE for r in self.db["runs"].values())
+
+    async def previous_run(self, run):
+        col = "agent_id" if run.get("target_kind", "agent") == "agent" else "workflow_id"
+        rs = [r for r in self.db["runs"].values() if r["set_id"] == run["set_id"] and r["target_kind"] == run.get("target_kind", "agent") and r[col] == run[col]
+              and r["status"] == "succeeded" and r["id"] != run["id"] and r["created_at"] < run["created_at"]]
+        return self._run_row(max(rs, key=lambda r: r["created_at"])) if rs else None
+
+    # schedules
+    async def list_schedules(self, tenant_id, set_id=None):
+        return [copy.deepcopy(s) for s in self.db.setdefault("schedules", {}).values() if s["tenant_id"] == tenant_id and (not set_id or s["set_id"] == set_id)]
+
+    async def get_schedule(self, tenant_id, sched_id):
+        s = self.db.setdefault("schedules", {}).get(sched_id)
+        return copy.deepcopy(s) if s and (tenant_id is None or s["tenant_id"] == tenant_id) else None
+
+    async def create_schedule(self, tenant_id, fields):
+        sid = str(uuid.uuid4())
+        base = {k: None for k in ("agent_id", "workflow_id", "every_minutes", "min_pass_rate", "next_run_at", "data_seen_at", "last_run_id")}
+        self.db.setdefault("schedules", {})[sid] = {**base, "on_data": False, "options": {}, "enabled": True, **copy.deepcopy(fields), "id": sid, "tenant_id": tenant_id, "created_at": now(), "updated_at": now()}
+        return sid
+
+    async def update_schedule(self, sched_id, fields):
+        self.db["schedules"][sched_id].update(copy.deepcopy(fields), updated_at=now())
+
+    async def delete_schedule(self, tenant_id, sched_id):
+        self.db.setdefault("schedules", {}).pop(sched_id, None)
+
+    async def schedules_to_check(self, when):
+        return [copy.deepcopy(s) for s in self.db.setdefault("schedules", {}).values() if s["enabled"] and (s["on_data"] or (s["next_run_at"] and s["next_run_at"] <= when))]
+
+    async def latest_export(self, tenant_id, collections):
+        times = [t for c, t in self.db.setdefault("exports", {}).items() if c in collections]
+        return max(times) if times else None
 
     # results
     async def results(self, run_id):

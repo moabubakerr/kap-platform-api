@@ -77,3 +77,32 @@ async def test_sets_cases_runs_results(st):
     assert (await st.results(rid))[0]["case_id"] is None
     await st.delete_set(TENANT, sid)
     assert await st.get_run(TENANT, rid) is None
+
+
+async def test_workflow_targets_previous_run_and_schedules(st):
+    sid = await st.create_set(TENANT, {"name": "QA2"})
+    await st.add_cases(sid, [{"question": "q1"}])
+    cases = await st.list_cases(sid)
+    wf = {"set_id": sid, "target_kind": "workflow", "workflow_id": "ind_answer", "version": "v2", "agent_name": "W", "agent": {"kind": "workflow"}, "trigger": "schedule"}
+    r1 = await st.create_run(TENANT, wf, cases)
+    assert await st.has_active_run(TENANT, sid, "workflow", "ind_answer") and not await st.has_active_run(TENANT, sid, "agent", AGENT)
+    await st.update_run(r1, {"status": "succeeded", "regressed": False})
+    r2 = await st.create_run(TENANT, wf, cases)
+    run2 = await st.get_run(TENANT, r2)
+    assert run2["target_kind"] == "workflow" and run2["version"] == "v2" and run2["trigger"] == "schedule" and run2["agent_id"] is None
+    assert (await st.previous_run(run2))["id"] == r1 and await st.previous_run(await st.get_run(TENANT, r1)) is None
+    res = (await st.results(r2))[0]
+    await st.update_result(res["id"], {"wf_run_id": AGENT})
+    assert (await st.results(r2))[0]["wf_run_id"] == AGENT
+    assert (await st.list_runs(TENANT, None, None, 10, 0, "ind_answer"))[1] == 2
+
+    s = await st.create_schedule(TENANT, {"set_id": sid, "target_kind": "workflow", "workflow_id": "ind_answer", "on_data": True, "min_pass_rate": 0.8, "options": {"judge": False}})
+    got = await st.get_schedule(TENANT, s)
+    assert got["min_pass_rate"] == 0.8 and got["on_data"] and got["options"] == {"judge": False}
+    now = datetime.now(timezone.utc)
+    assert [x["id"] for x in await st.schedules_to_check(now)] == [s]
+    await st.update_schedule(s, {"enabled": False})
+    assert await st.schedules_to_check(now) == []
+    assert await st.latest_export(TENANT, ["askai_indicators"]) is None
+    await st.delete_schedule(TENANT, s)
+    assert await st.list_schedules(TENANT) == []

@@ -41,6 +41,12 @@ class Services:
     def store(self, pool: Any) -> Any:
         return self.store_factory(pool)
 
+    def wf_store(self, pool: Any) -> Any:
+        """The workflows' store (imported late: workflows use this module's helpers)."""
+        from ..workflows import runner as wf_runner
+
+        return wf_runner.SERVICES.store(pool)
+
     def judge(self, settings: Settings) -> Any:
         return self.judge_factory(settings)
 
@@ -139,26 +145,83 @@ async def _follow(st: Any, kap: KapClient, settings: Settings, run: Mapping[str,
         })
 
 
-async def _score(st: Any, judge: Any, settings: Settings, run: Mapping[str, Any], r: dict[str, Any], options: Mapping[str, Any]) -> bool:
+async def _follow_wf(st: Any, pool: Any, settings: Settings, run: Mapping[str, Any], r: dict[str, Any]) -> None:
+    """A question sent to a workflow: read its workflow run; store the answer once it is finished."""
+    wr = await SERVICES.wf_store(pool).get_run(run["tenant_id"], r["wf_run_id"])
+    if wr is None:
+        await st.update_result(r["id"], {"status": "error", "error": "The workflow run no longer exists.", "passed": False, "scored_at": _now()})
+        return
+    status = wr["status"]
+    if status in TERMINAL:
+        await st.update_result(r["id"], {
+            "status": "answered", "job_status": status, "answer": wr.get("answer") or None, "error": wr.get("error"),
+            "answered_at": _now(), "metrics": {"latency_ms": _ms(wr.get("started_at") or wr.get("created_at"), wr.get("finished_at")), "agent_jobs": wr.get("agent_jobs")},
+        })
+        return
+    if r.get("job_status") != status:
+        await st.update_result(r["id"], {"job_status": status})
+    if r.get("submitted_at") and _now() - _ts(r["submitted_at"]) > timedelta(seconds=settings.eval_job_wait_s):
+        why = "waits for a person (human review)" if status == "waiting" else f"was still {status}"
+        await st.update_result(r["id"], {
+            "status": "error", "job_status": status, "passed": False, "scored_at": _now(),
+            "error": f"The workflow run {why} after {settings.eval_job_wait_s // 60} minutes.", "reason": "Timed out waiting for the workflow.",
+        })
+
+
+async def _wf_traces(st: Any, pool: Any, run: Mapping[str, Any], r: Mapping[str, Any]) -> tuple[list[str], list[Any], list[str]]:
+    """(trace statuses, traces, step lines) of the agent steps of a question's workflow run."""
+    steps = await SERVICES.wf_store(pool).steps(r["wf_run_id"])
+    statuses, traces, lines = [], [], []
+    for s in sorted(steps.values(), key=lambda s: (s.seq is None, s.seq or 0)):
+        if s.seq is None:
+            continue
+        lines.append(f"{s.label} ({s.kind}): {s.status}")
+        if s.kind in ("agent", "aggregate") and s.job_id:
+            ts = await st.trace_status(s.job_id)
+            statuses.append(ts or "none")
+            if ts in ("linked", "ambiguous", "pending"):
+                traces.append(await st.trace(s.job_id))
+    return statuses, [t for t in traces if t is not None], lines
+
+
+async def _score(st: Any, judge: Any, settings: Settings, run: Mapping[str, Any], r: dict[str, Any], options: Mapping[str, Any], pool: Any = None) -> bool:
     """An answered question: checks and judge. False when it should wait for its trace."""
-    trace_status = await st.trace_status(r["job_id"])
     waited = _now() - (_ts(r.get("answered_at")) or _now())
-    # the judge needs the tools' results; a failed job fails anyway and is scored at once
-    if trace_status == "pending" and r.get("job_status") == "succeeded" and waited < timedelta(seconds=settings.eval_trace_wait_s):
-        return False
-    trace = await st.trace(r["job_id"]) if trace_status in ("linked", "ambiguous", "pending") else None
+    patient = r.get("job_status") == "succeeded" and waited < timedelta(seconds=settings.eval_trace_wait_s)
+    if r.get("wf_run_id"):
+        # a workflow: evidence from every agent step's trace
+        statuses, traces, lines = await _wf_traces(st, pool, run, r)
+        if patient and "pending" in statuses:
+            return False
+        evidence = "\n\n".join(e for e in (evidence_of(t) for t in traces) if e)
+        trace_metrics = {
+            "tokens": sum(metrics_of({}, t).get("tokens") or 0 for t in traces) or None,
+            "tool_calls": sum(metrics_of({}, t).get("tool_calls") or 0 for t in traces) or None,
+            "tool_errors": sum(metrics_of({}, t).get("tool_errors") or 0 for t in traces),
+            "tools": [x for t in traces for x in (metrics_of({}, t).get("tools") or [])],
+            "steps": lines,
+        }
+        trace = None
+    else:
+        trace_status = await st.trace_status(r["job_id"])
+        # the judge needs the tools' results; a failed job fails anyway and is scored at once
+        if trace_status == "pending" and patient:
+            return False
+        trace = await st.trace(r["job_id"]) if trace_status in ("linked", "ambiguous", "pending") else None
+        evidence = evidence_of(trace)
+        trace_metrics = metrics_of({}, trace)
     answer = r.get("answer") or ""
     if not answer and trace is not None and trace.answer:
         answer = trace.answer
     checks = score.run_checks(answer, r.get("must_include") or [], r.get("must_not_include") or [])
     judged = None
     if options.get("judge") and r.get("job_status") == "succeeded" and answer.strip():
-        judged = await judge.grade(r["question"], r.get("expected") or "", r.get("must_include") or [], answer, evidence_of(trace) or None)
+        judged = await judge.grade(r["question"], r.get("expected") or "", r.get("must_include") or [], answer, evidence or None)
     passed, reason = score.decide(r.get("job_status"), answer, checks, judged, options)
     if r.get("job_status") != "succeeded" and r.get("error"):
         reason = f"{reason} {r['error']}"[:2000]
     metrics = dict(r.get("metrics") or {})  # latency and queue time, from the job
-    metrics.update({k: v for k, v in metrics_of({}, trace).items() if v is not None})  # tokens and tools, from the trace
+    metrics.update({k: v for k, v in trace_metrics.items() if v is not None})  # tokens and tools, from the trace(s)
     await st.update_result(r["id"], {
         "status": "scored", "answer": answer or None, "checks": checks, "judge": judged, "passed": passed,
         "reason": reason or None, "metrics": metrics, "scored_at": _now(),
@@ -181,6 +244,31 @@ async def _submit(st: Any, kap: KapClient, settings: Settings, run: Mapping[str,
     return True
 
 
+async def _submit_wf(st: Any, kap: KapClient, pool: Any, run: Mapping[str, Any], r: dict[str, Any]) -> bool:
+    """Send one question to the workflow version under test. False when KAP is busy."""
+    from ..workflows.start import StartRefused, start_run
+
+    try:
+        rid = await start_run(SERVICES.wf_store(pool), kap, pool, run["tenant_id"], run["workflow_id"], r["question"], version=run.get("version"), trigger="eval", created_by="evaluation")
+    except StartRefused as exc:
+        await st.update_result(r["id"], {"status": "error", "error": exc.message, "passed": False, "reason": "The workflow could not start.", "scored_at": _now()})
+        return True
+    except KapError as exc:
+        if exc.status == 429 or exc.status >= 500:
+            return False
+        raise
+    await st.update_result(r["id"], {"status": "submitted", "wf_run_id": rid, "job_status": "queued", "submitted_at": _now()})
+    return True
+
+
+async def _finish(st: Any, run: Mapping[str, Any], results: list[dict[str, Any]], summary: dict[str, Any], options: Mapping[str, Any]) -> dict[str, Any]:
+    """Regression check against the previous finished run of the same test set and target."""
+    prev = await st.previous_run(dict(run))
+    prev_results = await st.results(prev["id"]) if prev else None
+    regressed, reason = score.regression(prev.get("summary") if prev else None, prev_results, summary, results, options.get("min_pass_rate"))
+    return {"regressed": regressed, "regress_reason": reason}
+
+
 async def tick(pool: Any, kap: KapClient, settings: Settings, run_id: str) -> dict[str, Any]:
     st = SERVICES.store(pool)
     run = await st.get_run(None, run_id)
@@ -191,10 +279,14 @@ async def tick(pool: Any, kap: KapClient, settings: Settings, run_id: str) -> di
     options = score.options_with_defaults(run.get("options"))
     agent = {"id": run["agent_id"], "name": run.get("agent_name")}
 
+    is_wf = run.get("target_kind") == "workflow"
     results = await st.results(run["id"])
     for r in results:
         if r["status"] == "submitted":
-            await _follow(st, kap, settings, run, r, agent)
+            if is_wf:
+                await _follow_wf(st, pool, settings, run, r)
+            else:
+                await _follow(st, kap, settings, run, r, agent)
 
     results = await st.results(run["id"])
     to_score = [r for r in results if r["status"] == "answered"]
@@ -202,7 +294,7 @@ async def tick(pool: Any, kap: KapClient, settings: Settings, run_id: str) -> di
         judge = SERVICES.judge(settings) if options.get("judge") else None
         try:
             for r in to_score:
-                await _score(st, judge, settings, run, r, options)
+                await _score(st, judge, settings, run, r, options, pool)
         finally:
             if judge is not None:
                 await judge.aclose()
@@ -214,7 +306,8 @@ async def tick(pool: Any, kap: KapClient, settings: Settings, run_id: str) -> di
         if in_flight >= parallel:
             break
         if r["status"] == "pending":
-            if not await _submit(st, kap, settings, run, r, agent):
+            sent = await (_submit_wf(st, kap, pool, run, r) if is_wf else _submit(st, kap, settings, run, r, agent))
+            if not sent:
                 break
             in_flight += 1
 
@@ -225,8 +318,9 @@ async def tick(pool: Any, kap: KapClient, settings: Settings, run_id: str) -> di
     if latest is None or latest["status"] == "cancelled":
         return {"skipped": "cancelled"}
     if all(r["status"] in DONE for r in results):
-        await st.update_run(run["id"], {"status": "succeeded", "summary": summary, "polls": polls, "finished_at": _now()})
-        return {"status": "succeeded", "summary": summary}
+        reg = await _finish(st, run, results, summary, options)
+        await st.update_run(run["id"], {"status": "succeeded", "summary": summary, "polls": polls, "finished_at": _now(), **reg})
+        return {"status": "succeeded", "summary": summary, **reg}
     await st.update_run(run["id"], {"summary": summary, "polls": polls})
     await enqueue_tick(pool, run, polls, settings.eval_poll_s)
     return {"status": "running", "done": summary["done"], "total": summary["total"]}

@@ -22,7 +22,8 @@ CASES = [
     {"question": Q3, "must_include": ["2.98"], "tags": ["quarterly"]},
 ]
 SET_KEYS = {"id", "name", "description", "case_count", "last_run", "created_at", "updated_at"}
-RUN_KEYS = {"id", "set_id", "set_name", "agent_id", "agent_name", "agent", "label", "status", "summary", "error", "created_at", "started_at", "finished_at", "options"}
+RUN_KEYS = {"id", "set_id", "set_name", "agent_id", "agent_name", "agent", "label", "status", "summary", "error", "created_at", "started_at", "finished_at", "options",
+            "target_kind", "workflow_id", "version", "trigger", "regressed", "regress_reason"}
 
 
 @pytest.fixture

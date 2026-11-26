@@ -220,3 +220,33 @@ def summarize(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         "tokens_total": sum(tokens) if tokens else None,
         "tool_errors": sum(int(m.get("tool_errors") or 0) for m in metrics),
     }
+
+
+def _pct(x: float) -> str:
+    return f"{round(x * 100)}%"
+
+
+def regression(prev_summary: Mapping[str, Any] | None, prev_results: list[Mapping[str, Any]] | None, summary: Mapping[str, Any],
+               results: list[Mapping[str, Any]], min_pass_rate: float | None = None) -> tuple[bool | None, str | None]:
+    """(regressed, reason) of a finished run against the previous run of the same test set and target.
+
+    Regressed when the pass rate fell, when a question that passed before fails now, or when the
+    pass rate is below `min_pass_rate`. None when there is nothing to compare with and no minimum.
+    """
+    if prev_results is None and min_pass_rate is None:
+        return None, None
+    rate = summary.get("pass_rate")
+    reasons: list[str] = []
+    if prev_results is not None:
+        key = lambda r: r.get("case_id") or str(r.get("question") or "").strip().lower()  # noqa: E731
+        before = {key(r): bool(r.get("passed")) for r in prev_results if r.get("status") in ("scored", "error")}
+        broken = [str(r.get("question")) for r in results if before.get(key(r)) is True and not r.get("passed")]
+        prev_rate = (prev_summary or {}).get("pass_rate")
+        if prev_rate is not None and rate is not None and rate < prev_rate:
+            reasons.append(f"Pass rate {_pct(prev_rate)} → {_pct(rate)}")
+        if broken:
+            shown = "; ".join(q if len(q) <= 80 else q[:79] + "…" for q in broken[:5])
+            reasons.append(f"Now failing: {shown}" + (f" and {len(broken) - 5} more" if len(broken) > 5 else ""))
+    if min_pass_rate is not None and rate is not None and rate < float(min_pass_rate):
+        reasons.append(f"Pass rate {_pct(rate)} is below the required {_pct(float(min_pass_rate))}")
+    return bool(reasons), " · ".join(reasons) or None

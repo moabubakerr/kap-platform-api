@@ -9,7 +9,8 @@ Job kinds (slice 1):
   eval_watch       {run_id}                            — one tick of an evaluation run (evals/runner.py, re-enqueued every ~5 s)
   wf_tick          {run_id}                            — one tick of a workflow run (workflows/runner.py)
 
-The scheduler tick (every sync_interval_s) also starts scheduled PostgreSQL exports.
+The scheduler tick (every sync_interval_s) also starts scheduled PostgreSQL exports
+and scheduled / new-data evaluation runs (evals/schedule.py).
 """
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ from . import queue, store
 from .config import Settings
 from .kap.client import KapClient, KapError
 from .evals import runner as eval_runner
+from .evals import schedule as eval_schedule
 from .pgsource import export as pg_export
 from .workflows import runner as wf_runner
 from .traces.correlate import link_job
@@ -156,6 +158,11 @@ class Worker:
                     await pg_export.schedule_tick(self.pool, self.settings)
                 except Exception:
                     log.exception("scheduled PostgreSQL exports could not be started")
+            if "eval_watch" in self.handlers:
+                try:
+                    await eval_schedule.schedule_tick(self.pool, self.kap, self.settings)
+                except Exception:
+                    log.exception("scheduled evaluations could not be started")
             await self._sleep(interval)
 
     async def _housekeeping(self) -> None:

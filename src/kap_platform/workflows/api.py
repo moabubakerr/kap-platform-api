@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from ..config import Settings
 from ..kap.client import KapClient
-from . import graph, runner
+from . import graph, runner, start
 from .store import ACTIVE
 
 WF_ID = r"^[a-z][a-z0-9_]{2,40}$"
@@ -45,13 +45,6 @@ class ReviewIn(BaseModel):
     approve: bool
     answer: str | None = Field(None, max_length=20000)
     comment: str | None = Field(None, max_length=2000)
-
-
-def version_of(doc: dict[str, Any], v: str | None) -> dict[str, Any] | None:
-    vers = doc.get("vers") or []
-    if v:
-        return next((x for x in vers if x.get("v") == v), None)
-    return next((x for x in vers if x.get("st") == "Published"), None) or (vers[0] if vers else None)
 
 
 def step_out(s: graph.Step) -> dict[str, Any]:
@@ -140,32 +133,14 @@ def register(app: FastAPI, settings: Settings, require_key: Callable, err: Calla
 
     @router.post("/workflow-runs", status_code=201)
     async def start_run(body: RunIn, request: Request, tid: str = Depends(tenant), st: Any = Depends(store)) -> dict[str, Any]:
-        w = await st.get_workflow(tid, body.workflow_id)
-        if w is None:
-            raise err(404, "not_found", "No such workflow.")
-        doc = w["doc"]
-        if doc.get("dis"):
-            raise err(409, "disabled", f"The workflow is disabled: {(doc['dis'] or {}).get('reason') or 'no reason given'}.")
-        ver = version_of(doc, body.version)
-        if ver is None:
-            raise err(404, "not_found", f"The workflow has no version {body.version}." if body.version else "The workflow has no version.")
-        if body.cfg is not None and body.trigger != "test":
-            raise err(422, "validation_error", "Unsaved changes (cfg) can only be run as a test.")
-        cfg = body.cfg if body.cfg is not None else ver.get("cfg") or {}
-        kap: KapClient = request.app.state.kap
-        agents = {a["name"]: a["id"] for a in await kap.list_agents(tid)}
-        probs = graph.problems(cfg, agents)
-        if probs:
-            raise err(422, "workflow_invalid", "The workflow cannot run: " + " ".join(probs[:5]), {"problems": probs})
-        used = {n[2] for n in graph.nodes_of(cfg) if n[1] in ("agent", "aggregate") and n[2]}
-        steps = [graph.Step(n[0], n[1], graph.label_of(n)) for n in graph.nodes_of(cfg)]
-        rid = await st.create_run(tid, {
-            "workflow_id": body.workflow_id, "workflow_name": doc.get("n") or body.workflow_id, "version": ver.get("v") or "?",
-            "trigger": body.trigger, "input": body.input.strip(), "cfg": cfg, "agents": {k: agents[k] for k in used}, "created_by": body.created_by,
-        }, steps)
-        run = await get_run(st, tid, rid)
-        await runner.enqueue_tick(request.app.state.pool, run, "start")
-        return run_out(run, await st.steps(rid))
+        try:
+            rid = await start.start_run(
+                st, request.app.state.kap, request.app.state.pool, tid, body.workflow_id, body.input,
+                version=body.version, cfg=body.cfg, trigger=body.trigger, created_by=body.created_by,
+            )
+        except start.StartRefused as exc:
+            raise err(exc.status, exc.kind, exc.message, exc.data)
+        return run_out(await get_run(st, tid, rid), await st.steps(rid))
 
     @router.get("/workflow-runs/{run_id}")
     async def read_run(run_id: str, tid: str = Depends(tenant), st: Any = Depends(store)) -> dict[str, Any]:
