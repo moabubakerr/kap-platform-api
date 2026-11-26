@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 import asyncpg
 
-from . import presets
+from . import mapping, presets
 from .kapcsv import FILES, HEADERS, ColumnError, CsvOutput, column_map, format_value, remap
 from .source import SourceSession, SqlRejected, check_select
 
@@ -43,9 +43,26 @@ async def _read_preset(session: SourceSession, dataset: Mapping[str, Any]) -> pr
     return res
 
 
+def _mapping_prefix(dataset: Mapping[str, Any]) -> str:
+    """Default id_prefix: the dataset name (stored mappings already carry one)."""
+    raw = dataset.get("mapping") or {}
+    table = raw.get("table") if isinstance(raw, Mapping) else None
+    return mapping.default_prefix(dataset.get("name") or (str(table).rsplit(".", 1)[-1] if table else None))
+
+
 async def read(session: SourceSession, dataset: Mapping[str, Any]) -> ReadResult:
     """Run the dataset's queries. Preset rows are kept in memory (thousands); custom rows stream to disk."""
     rr = ReadResult()
+    if dataset["preset"] == "mapped":
+        try:
+            mr = await mapping.read(session, dataset.get("mapping"), _mapping_prefix(dataset))
+        except asyncpg.PostgresError as exc:
+            raise ExportError(f"The column mapping query failed: {exc}") from exc
+        if mr.result is None:
+            raise ExportError("The column mapping cannot be used: " + "; ".join(mr.problems))
+        rr.rows = {n: mr.result.rows(n) for n in FILES}
+        rr.problems = mr.problems
+        return rr
     if dataset["preset"] == "scai_indicators":
         try:
             res = await _read_preset(session, dataset)
@@ -68,9 +85,9 @@ async def read(session: SourceSession, dataset: Mapping[str, Any]) -> ReadResult
             try:
                 sql = check_select(sql)
                 async with session.stream(sql) as (cols, rows):
-                    mapping = column_map(name, cols)
+                    colmap = column_map(name, cols)
                     async for r in rows:
-                        out.write(remap(r, mapping))
+                        out.write(remap(r, colmap))
             except (SqlRejected, ColumnError) as exc:
                 raise ExportError(f"{name}: {exc}" if isinstance(exc, SqlRejected) else str(exc)) from exc
             except asyncpg.PostgresError as exc:
@@ -103,6 +120,18 @@ def _fmt(rows: list[list[Any]]) -> list[list[str]]:
 async def preview(session: SourceSession, dataset: Mapping[str, Any], limit: int = PREVIEW_ROWS) -> dict[str, Any]:
     files: dict[str, Any] = {}
     problems: list[str] = []
+    if dataset["preset"] == "mapped":
+        empty = {n: {"columns": list(HEADERS[n]), "rows": [], "count": 0} for n in FILES}
+        try:
+            mr = await mapping.read(session, dataset.get("mapping"), _mapping_prefix(dataset))
+        except asyncpg.PostgresError as exc:
+            return {"files": empty, "problems": [f"The column mapping query failed: {exc}"], "queries": {"registry": None, "observations": None}}
+        if mr.result is None:
+            return {"files": empty, "problems": mr.problems, "queries": {"registry": None, "observations": None}}
+        for n in FILES:
+            rows = mr.result.rows(n)
+            files[n] = {"columns": list(HEADERS[n]), "rows": _fmt(rows[:limit]), "count": len(rows)}
+        return {"files": files, "problems": mr.problems, "queries": mr.queries}
     if dataset["preset"] == "scai_indicators":
         try:
             res = await _read_preset(session, dataset)
@@ -125,8 +154,8 @@ async def preview(session: SourceSession, dataset: Mapping[str, Any], limit: int
         try:
             sql = check_select(sql)
             cols, rows, _ = await session.sample(sql, limit)
-            mapping = column_map(name, cols)
-            entry["rows"] = _fmt([remap(r, mapping) for r in rows])
+            colmap = column_map(name, cols)
+            entry["rows"] = _fmt([remap(r, colmap) for r in rows])
             entry["count"] = await session.count(sql)
         except (SqlRejected, ColumnError) as exc:
             problems.append(f"{name}: {exc}" if isinstance(exc, SqlRejected) else str(exc))

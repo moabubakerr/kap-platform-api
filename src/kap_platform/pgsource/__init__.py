@@ -6,6 +6,7 @@ indicator pipeline load them.
   kapcsv.py     KAP indicator CSV format: headers, writer, periods, ids, custom-query columns
   source.py     read-only access to a source database (test, preview, fetch, stream)
   presets.py    built-in SQL + mapping for the scai_indicators schema
+  mapping.py    `mapped` preset: column mapping of one table/view → validated, generated SQL
   build.py      produce the three files (export) or a sample of them (preview)
   s3.py         uploads (boto3 in a thread, path addressing)
   provision.py  KAP connector / pipeline / collection for a dataset (idempotent)

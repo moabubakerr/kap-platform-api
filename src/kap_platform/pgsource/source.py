@@ -18,6 +18,8 @@ from typing import Any, AsyncIterator, Sequence
 
 import asyncpg
 
+from .mapping import COLUMNS_SQL
+
 CONNECT_TIMEOUT_S = 10
 STATEMENT_TIMEOUT_MS = 60_000
 PREVIEW_MAX = 50
@@ -157,6 +159,10 @@ class SourceSession:
             """
         )
         return [dict(r) for r in rows]
+
+    async def columns(self, schema: str, name: str) -> list[dict[str, Any]]:
+        """Columns of one table/view from information_schema: [{name, type, nullable}]."""
+        return [dict(r) for r in await self.conn.fetch(COLUMNS_SQL, schema, name)]
 
     async def fetch(self, sql: str, *args: Any, savepoint: bool = False) -> list[Any]:
         if savepoint:

@@ -54,18 +54,31 @@ ANALYSIS = [
 
 # ---------------------------------------------------------------- source session
 class FakeSession:
+    """`queries` maps SQL text → (columns, rows): used by sample/count/stream, and by fetch for any SQL
+    that is not a scai preset query (rows come back as dicts). `columns` maps "schema.name" → [{name, type, nullable}]."""
+
     def __init__(self, tables: dict[str, list[dict[str, Any]]] | None = None, queries: dict[str, tuple[list[str], list[tuple]]] | None = None):
         self.data = tables if tables is not None else {"details": DETAILS, "values": VALUES, "analysis": ANALYSIS}
         self.queries = queries or {}
+        self.readable = [{"schema": "public", "name": "indicators", "rows_estimate": 470}]
+        self.columns_by_table: dict[str, list[dict[str, Any]]] = {}
+        self.fetched: list[tuple[str, tuple]] = []
 
     async def server_version(self) -> str:
         return "16.4"
 
     async def tables(self) -> list[dict[str, Any]]:
-        return [{"schema": "public", "name": "indicators", "rows_estimate": 470}]
+        return copy.deepcopy(self.readable)
+
+    async def columns(self, schema: str, name: str) -> list[dict[str, Any]]:
+        return copy.deepcopy(self.columns_by_table.get(f"{schema}.{name}", []))
 
     async def fetch(self, sql: str, *args: Any, savepoint: bool = False) -> list[Any]:
-        key = {presets.DETAILS_SQL: "details", presets.VALUES_SQL: "values", presets.NARRATIVES_SQL: "analysis"}[sql]
+        self.fetched.append((sql, args))
+        key = {presets.DETAILS_SQL: "details", presets.VALUES_SQL: "values", presets.NARRATIVES_SQL: "analysis"}.get(sql)
+        if key is None:
+            cols, rows = self._q(sql)
+            return [dict(zip(cols, r)) for r in rows]
         return copy.deepcopy(self.data[key])
 
     def _q(self, sql: str) -> tuple[list[str], list[tuple]]:
@@ -196,7 +209,7 @@ class MemoryStore:
             if d["tenant_id"] == tenant_id and (d["name"] == fields["name"] or d["collection_name"] == fields["collection_name"]):
                 raise Conflict("A dataset with this name already exists.")
         did = str(uuid.uuid4())
-        row = {"id": did, "tenant_id": tenant_id, "queries": {}, "published_only": True, "schedule_minutes": None, "kap": None, "next_run_at": None, **fields, "created_at": now(), "updated_at": now()}
+        row = {"id": did, "tenant_id": tenant_id, "queries": {}, "mapping": None, "published_only": True, "schedule_minutes": None, "kap": None, "next_run_at": None, **fields, "created_at": now(), "updated_at": now()}
         self.db["datasets"][did] = row
         return self._ds(row)
 

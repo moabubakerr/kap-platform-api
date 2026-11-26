@@ -77,13 +77,13 @@ Pages and errors follow KAP's conventions (`items/total/limit/offset/has_next`, 
 Exports tables from a customer PostgreSQL database into KAP's indicator CSV format
 (`registry.csv`, `observations.csv`, `narratives.csv`: UTF-8 with BOM, comma, `.` decimals,
 RFC 4180), uploads them to S3 and lets KAP's own S3 connector and `indicators` pipeline load
-them. Code: `src/kap_platform/pgsource/`, tables: `migrations/0003_pg_source.sql`.
+them. Code: `src/kap_platform/pgsource/`, tables: `migrations/0003_pg_source.sql`, `0004_pg_mapping.sql`.
 
 - **Source** — host, port, database, read-only login, sslmode. The password is stored encrypted
   (Fernet, `PLATFORM_SECRET_KEY`) and never returned (`password_set: true`). Every session is a
   `READ ONLY` transaction, `statement_timeout` 60 s, connect timeout 10 s. `test` lists readable
   tables; `preview` runs one SELECT/WITH (≤ 50 rows).
-- **Dataset** — a source + preset + target KAP collection (+ optional schedule in minutes).
+- **Dataset** — a source + preset + target KAP collection (+ optional schedule in minutes). Three presets:
   - `scai_indicators`: built-in SQL for the scai-chatbot schema. One series per published indicator
     detail × granularity × geography in `indicator_values`; id
     `cms.<PublishedIndicatorDetailId, lower-case, no dashes>.<a|q|m>.overall` for Qatar (blank/`Qatar`
@@ -91,6 +91,26 @@ them. Code: `src/kap_platform/pgsource/`, tables: `migrations/0003_pg_source.sql
     `indicator_analysis` (published commentary preferred over item commentary).
   - `custom`: your own `registry` and `observations` (and optional `narratives`) SELECTs returning
     KAP column names; unknown columns are rejected, missing optional ones written blank.
+  - `mapped`: no SQL. Pick one table or view where each row is an observation and map its columns
+    (dataset field `mapping`, jsonb):
+    ```
+    {table: "schema.name", series_key: [col, …], id_prefix?: [a-z0-9_]{1,24} (default: dataset name),
+     period: {column, kind: "date"|"text"}, frequency: {value: "A"|"Q"|"M"} | {column, map: {"<raw>": "A"|"Q"|"M"}},
+     value: col, target?, name_en?, name_ar?, definition?, unit?/source?: {value} | {column},
+     dimension?, domestic_values?: [str], filters?: [{column, op: "="|"!="|"is_true"|"is_false"|"is_not_null", value?}]}
+    ```
+    The platform generates a registry query (grouped per series × frequency × dimension, newest
+    non-blank names/unit/source/definition) and an observations query. Safety: the table must be one
+    the login can SELECT, every column must exist in it (`information_schema.columns`) with a fitting
+    type (numeric value/target, date/timestamp for `kind: date`, text/integer for `kind: text`, boolean
+    for `is_true`/`is_false`), identifiers are double-quoted and filter values are `$n` parameters.
+    id = `<id_prefix>.<slug(series key values joined ".")>.<a|q|m>.<overall | slug(dimension)>` (slug:
+    lower-case `[a-z0-9_]`, ≤ 48 chars, a hash suffix when truncated). `id_prefix` is stored on save, so
+    renaming the dataset keeps the ids. Date periods are formatted per frequency (`YYYY`, `YYYY-Qn`,
+    `YYYY-MM`); text periods must already be in that format. Dimension values that are blank or in
+    `domestic_values` (case-insensitive) form the main series (`overall`, blank dimension); others get
+    their own series named "Name (Dimension)". Rows without value and target, bad periods, unmapped
+    frequencies and duplicates (last kept) are counted in `problems`. Narratives: header only.
 - **Run** (`pg_export` job): `read` → `write` → `upload` to `s3://<bucket>/<tenant_id>/<dataset>/<file>.csv`
   (fixed keys, so each run is a new file version in KAP) → `kap_scan` (KAP's connector, scanning every
   minute, starts a pipeline job) → `kap_load` (that job's progress and result). The worker polls KAP
@@ -118,7 +138,7 @@ PLATFORM_S3_BUCKET=platform-exports     # created if missing
 ```
 
 Then rebuild (new dependencies `cryptography`, `boto3`) and migrate: `docker compose -f docker-compose.stand.yml up -d --build`
-(the `platform-migrate` service applies `0003_pg_source`).
+(the `platform-migrate` service applies `0003_pg_source` and `0004_pg_mapping`).
 
 On the stand: source host `scai-chatbot-postgres-1`, port 5432, database `scai_indicators`,
 user `kap_platform_ro`, sslmode `disable`; preset `scai_indicators`.
@@ -129,8 +149,10 @@ user `kap_platform_ro`, sslmode `disable`; preset `scai_indicators`.
 | GET/PATCH/DELETE | `/api/t/{tid}/pg-sources/{id}` | DELETE → 409 while datasets use it |
 | POST | `/api/t/{tid}/pg-sources/{id}/test` | `{ok, message, server_version, tables}` |
 | POST | `/api/t/{tid}/pg-sources/{id}/preview` | `{sql, limit≤50}` → `{columns, rows, truncated}` |
-| POST/GET | `/api/t/{tid}/pg-datasets[?source_id=]` | create / list datasets |
+| GET | `/api/t/{tid}/pg-sources/{id}/columns?table=schema.name` | `{table, columns: [{name, type, nullable}]}`; 404 for a table the login cannot read |
+| POST | `/api/t/{tid}/pg-sources/{id}/mapping-preview` | `{mapping, limit?, name?}` → like a dataset preview, nothing saved |
+| POST/GET | `/api/t/{tid}/pg-datasets[?source_id=]` | create / list datasets (`mapping` for preset `mapped`; `queries` ignored there) |
 | GET/PATCH/DELETE | `/api/t/{tid}/pg-datasets/{id}` | |
-| POST | `/api/t/{tid}/pg-datasets/{id}/preview` | first rows + counts of the three files, `problems` |
+| POST | `/api/t/{tid}/pg-datasets/{id}/preview` | first rows + counts of the three files, `problems`; `mapped` also `queries: {registry, observations}` (the generated SQL) |
 | POST | `/api/t/{tid}/pg-datasets/{id}/run` | 201 export run (409 while one is active) |
 | GET | `/api/t/{tid}/pg-exports[?dataset_id=]`, `/api/t/{tid}/pg-exports/{id}` | runs, newest first |

@@ -49,6 +49,14 @@ async def test_sources_datasets_runs(st):
         await st.create_dataset(TENANT, {"source_id": src["id"], "name": "other", "preset": "custom", "collection_name": "scai_ind"})
     assert await st.count_datasets(TENANT, src["id"]) == 1
 
+    # migration 0004: preset mapped + mapping jsonb (required for mapped)
+    m = {"table": "public.kpi", "series_key": ["indicator"], "id_prefix": "kpi", "period": {"column": "d", "kind": "date"}, "frequency": {"value": "A"}, "value": "v", "domestic_values": [], "filters": []}
+    mapped = await st.create_dataset(TENANT, {"source_id": src["id"], "name": "kpi", "preset": "mapped", "mapping": m, "collection_name": "kpi_coll"})
+    assert mapped["mapping"] == m and ds["mapping"] is None
+    with pytest.raises(asyncpg.CheckViolationError):
+        await st.create_dataset(TENANT, {"source_id": src["id"], "name": "kpi2", "preset": "mapped", "collection_name": "kpi_coll2"})
+    await st.delete_dataset(TENANT, mapped["id"])
+
     due = await st.due_datasets()
     assert due == [{"id": ds["id"], "tenant_id": TENANT}] and await st.due_datasets() == []
 

@@ -4,6 +4,8 @@
   GET/PATCH/DELETE    /api/t/{tid}/pg-sources/{id}
   POST                /api/t/{tid}/pg-sources/{id}/test
   POST                /api/t/{tid}/pg-sources/{id}/preview
+  GET                 /api/t/{tid}/pg-sources/{id}/columns?table=schema.name
+  POST                /api/t/{tid}/pg-sources/{id}/mapping-preview
   POST/GET            /api/t/{tid}/pg-datasets
   GET/PATCH/DELETE    /api/t/{tid}/pg-datasets/{id}
   POST                /api/t/{tid}/pg-datasets/{id}/preview
@@ -23,13 +25,13 @@ from pydantic import BaseModel, Field
 
 from ..config import Settings
 from ..kap.client import KapClient
-from . import build, export
+from . import build, export, mapping
 from .secrets import SecretBox, SecretKeyMissing
 from .source import PREVIEW_MAX, SourceUnavailable, SqlRejected, check_select, jsonable
 from .store import Conflict, InUse
 
 SslMode = Literal["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]
-Preset = Literal["scai_indicators", "custom"]
+Preset = Literal["scai_indicators", "custom", "mapped"]
 NAME = r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,99}$"
 DATASET_NAME = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"  # part of the S3 key
 COLLECTION_NAME = r"^[A-Za-z0-9_]{4,29}$"  # KAP: [A-Za-z0-9_], 4–32 chars; the connector adds "_pg"
@@ -72,6 +74,7 @@ class DatasetIn(BaseModel):
     name: str = Field(pattern=DATASET_NAME)
     preset: Preset
     queries: Queries | None = None
+    mapping: dict[str, Any] | None = None  # preset mapped; shape checked by mapping.normalize
     published_only: bool = True
     collection_name: str = Field(pattern=COLLECTION_NAME)
     schedule_minutes: int | None = Field(None, ge=1, le=60 * 24 * 31)
@@ -82,9 +85,16 @@ class DatasetPatch(BaseModel):
     name: str | None = Field(None, pattern=DATASET_NAME)
     preset: Preset | None = None
     queries: Queries | None = None
+    mapping: dict[str, Any] | None = None
     published_only: bool | None = None
     collection_name: str | None = Field(None, pattern=COLLECTION_NAME)
     schedule_minutes: int | None = Field(None, ge=1, le=60 * 24 * 31)
+
+
+class MappingPreviewIn(BaseModel):
+    mapping: dict[str, Any]
+    limit: int = Field(build.PREVIEW_ROWS, ge=1, le=PREVIEW_MAX)
+    name: str | None = Field(None, pattern=DATASET_NAME)  # optional: the default id_prefix, as the dataset would get it
 
 
 # ---------------------------------------------------------------- output shapes
@@ -100,7 +110,7 @@ def dataset_out(r: dict[str, Any]) -> dict[str, Any]:
     kap = r.get("kap")
     return {
         "id": r["id"], "source_id": r["source_id"], "source_name": r.get("source_name"), "name": r["name"], "preset": r["preset"],
-        "queries": r.get("queries") or {}, "published_only": r["published_only"], "collection_name": r["collection_name"],
+        "queries": r.get("queries") or {}, "mapping": r.get("mapping") if r["preset"] == "mapped" else None, "published_only": r["published_only"], "collection_name": r["collection_name"],
         "schedule_minutes": r.get("schedule_minutes"), "next_run_at": r.get("next_run_at"),
         "kap": {k: kap.get(k) for k in KAP_KEYS} if kap else None,
         "last_run": r.get("last_run"), "created_at": r["created_at"], "updated_at": r["updated_at"],
@@ -253,8 +263,45 @@ def register(app: FastAPI, settings: Settings, require_key: Callable, err: Calla
             raise err(422, "query_error", str(exc), {"sqlstate": getattr(exc, "sqlstate", None)})
         return {"columns": cols, "rows": [[jsonable(v) for v in r] for r in rows], "truncated": truncated}
 
+    @router.get("/pg-sources/{source_id}/columns")
+    async def source_columns(source_id: str, table: str = Query(min_length=1, max_length=512), tid: str = Depends(tenant), st: Any = Depends(store)) -> dict[str, Any]:
+        src = await get_source(st, tid, source_id)
+        try:
+            async with open_session(src) as s:
+                found = await mapping.resolve_table(s, table)
+                cols = await s.columns(*found) if found else None
+        except SourceUnavailable as exc:
+            raise err(502, "source_unavailable", f"Cannot connect to the source database: {exc}")
+        except asyncpg.PostgresError as exc:
+            raise err(422, "query_error", str(exc), {"sqlstate": getattr(exc, "sqlstate", None)})
+        if cols is None:
+            raise err(404, "not_found", f'No table or view "{table}" that this login can read.')
+        return {"table": table, "columns": [{"name": c["name"], "type": c["type"], "nullable": bool(c["nullable"])} for c in cols]}
+
+    @router.post("/pg-sources/{source_id}/mapping-preview")
+    async def mapping_preview(source_id: str, body: MappingPreviewIn, tid: str = Depends(tenant), st: Any = Depends(store)) -> dict[str, Any]:
+        src = await get_source(st, tid, source_id)
+        try:
+            async with open_session(src) as s:
+                return await build.preview(s, {"preset": "mapped", "mapping": body.mapping, "name": body.name}, body.limit)
+        except SourceUnavailable as exc:
+            raise err(502, "source_unavailable", f"Cannot connect to the source database: {exc}")
+
     # ------------------------------------------------------------ datasets
+    def _mapping(preset: str, raw: dict[str, Any] | None, name: str) -> dict[str, Any] | None:
+        """Checked mapping for preset mapped (id_prefix defaults to the dataset name), else None."""
+        if preset != "mapped":
+            return None
+        if raw is None:
+            raise err(422, "validation_error", "A mapped dataset needs a mapping.", {"field": "mapping", "problems": ["mapping: required"]})
+        m, problems = mapping.normalize(raw, mapping.default_prefix(name))
+        if m is None:
+            raise err(422, "validation_error", "The column mapping is not valid: " + "; ".join(problems), {"field": "mapping", "problems": problems})
+        return m
+
     def _queries(preset: str, q: Queries | dict | None) -> dict[str, str]:
+        if preset == "mapped":
+            return {}
         data = q.model_dump() if isinstance(q, Queries) else dict(q or {})
         data = {k: v for k, v in data.items() if v and v.strip()}
         if preset == "custom":
@@ -278,7 +325,7 @@ def register(app: FastAPI, settings: Settings, require_key: Callable, err: Calla
             raise err(422, "validation_error", "source_id does not name a source of this tenant.", {"field": "source_id"})
         fields = {
             "source_id": body.source_id, "name": body.name, "preset": body.preset, "queries": _queries(body.preset, body.queries),
-            "published_only": body.published_only, "collection_name": body.collection_name,
+            "mapping": _mapping(body.preset, body.mapping, body.name), "published_only": body.published_only, "collection_name": body.collection_name,
             "schedule_minutes": body.schedule_minutes, "next_run_at": _next_run(body.schedule_minutes),
         }
         try:
@@ -316,6 +363,8 @@ def register(app: FastAPI, settings: Settings, require_key: Callable, err: Calla
         preset = fields.get("preset", ds["preset"])
         if "queries" in given or "preset" in fields:
             fields["queries"] = _queries(preset, body.queries if "queries" in given else ds.get("queries"))
+        if "mapping" in given or "preset" in fields:
+            fields["mapping"] = _mapping(preset, body.mapping if "mapping" in given else ds.get("mapping"), fields.get("name", ds["name"]))
         if "schedule_minutes" in given and body.schedule_minutes != ds.get("schedule_minutes"):
             fields["schedule_minutes"] = body.schedule_minutes
             fields["next_run_at"] = _next_run(body.schedule_minutes)

@@ -28,7 +28,7 @@ _CONSTRAINT_MESSAGES = {
 }
 
 SOURCE_FIELDS = ("name", "host", "port", "database", "username", "password_enc", "sslmode", "last_test")
-DATASET_FIELDS = ("source_id", "name", "preset", "queries", "published_only", "collection_name", "schedule_minutes", "kap", "next_run_at")
+DATASET_FIELDS = ("source_id", "name", "preset", "queries", "mapping", "published_only", "collection_name", "schedule_minutes", "kap", "next_run_at")
 RUN_FIELDS = ("status", "steps", "counts", "files", "file_hashes", "kap", "uploaded_at", "polls", "error", "started_at", "finished_at")
 
 _SOURCE_SELECT = """
@@ -36,7 +36,7 @@ select id::text, tenant_id::text, name, host, port, database, username, password
   from pg_source
 """
 _DATASET_SELECT = """
-select d.id::text, d.tenant_id::text, d.source_id::text, s.name as source_name, d.name, d.preset, d.queries,
+select d.id::text, d.tenant_id::text, d.source_id::text, s.name as source_name, d.name, d.preset, d.queries, d.mapping,
        d.published_only, d.collection_name, d.schedule_minutes, d.kap, d.next_run_at, d.created_at, d.updated_at,
        (select jsonb_build_object('id', r.id, 'status', r.status, 'finished_at', r.finished_at)
           from pg_export_run r where r.dataset_id = d.id order by r.created_at desc limit 1) as last_run
