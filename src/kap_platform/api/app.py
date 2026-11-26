@@ -10,6 +10,7 @@ Conventions follow KAP so the console sees one platform: pages as
   GET  /api/traces/{job_id}                              one job with its trace steps
   *    /api/t/{tenant_id}/kap/{path}                      KAP passthrough for the console hubs (kap_proxy.py)
   *    /api/t/{tenant_id}/pg-sources|pg-datasets|pg-exports  PostgreSQL data source (pgsource/api.py)
+  *    /api/t/{tenant_id}/eval-sets|eval-runs              evaluations (evals/api.py)
 
 Console auth in slice 1 is a static bearer key (PLATFORM_API_KEYS); it is
 replaced by the platform's own users, groups and grants in a later slice.
@@ -27,6 +28,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from .. import queue, store
+from ..evals import api as eval_api
 from ..pgsource import api as pg_api
 from . import kap_proxy
 from ..config import Settings
@@ -157,6 +159,9 @@ def create_api(settings: Settings, pool_factory=None, kap_factory=None) -> FastA
 
     # ------------------------------------------------------------ PostgreSQL data source
     pg_api.register(app, settings, require_key, _err)
+
+    # ------------------------------------------------------------ evaluations
+    eval_api.register(app, settings, require_key, _err)
 
     # ------------------------------------------------------------ traces
     @app.get("/api/traces",dependencies=[Depends(require_key)])

@@ -94,6 +94,16 @@ class Settings(BaseSettings):
     kap_embedding_model_ref: str = "embed_default"  # pipelines the platform creates
     kap_chat_model_ref: str = "chat_default"  # records preset: summary model (pipeline + collection)
 
+    # Evaluations
+    eval_poll_s: int = 5  # how often a run checks its KAP jobs
+    eval_job_wait_s: int = 900  # one question: give up on its KAP job after this long
+    eval_trace_wait_s: int = 90  # after a job finishes: wait this long for its trace before scoring without it
+    eval_max_parallel: int = 4  # upper bound for a run's "parallel" option (KAP jobs in flight per run)
+    eval_judge_provider: str = ""  # gateway provider name whose upstream serves the judge; empty = gateway_default_upstream
+    eval_judge_model: str = ""  # empty = the first model the server lists
+    eval_judge_api_key: str = ""
+    eval_judge_timeout_s: float = 180.0
+
     def tenants(self) -> list[Tenant]:
         return load_tenants(self.tenants_file)
 

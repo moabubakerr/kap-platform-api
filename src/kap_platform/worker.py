@@ -6,6 +6,7 @@ Job kinds (slice 1):
   link_trace       {job_id}                            — link recorded model calls to a finished job
   pg_export        {run_id}                            — export a PostgreSQL dataset to S3 for KAP (pgsource/export.py)
   pg_export_watch  {run_id}                            — follow KAP's pipeline job for that export (re-enqueued every ~10 s)
+  eval_watch       {run_id}                            — one tick of an evaluation run (evals/runner.py, re-enqueued every ~5 s)
 
 The scheduler tick (every sync_interval_s) also starts scheduled PostgreSQL exports.
 """
@@ -23,6 +24,7 @@ import asyncpg
 from . import queue, store
 from .config import Settings
 from .kap.client import KapClient, KapError
+from .evals import runner as eval_runner
 from .pgsource import export as pg_export
 from .traces.correlate import link_job
 
@@ -105,6 +107,7 @@ HANDLERS: dict[str, Handler] = {
     "link_trace": handle_link_trace,
     "pg_export": pg_export.handle_pg_export,
     "pg_export_watch": pg_export.handle_pg_export_watch,
+    "eval_watch": eval_runner.handle_eval_watch,
 }
 
 
