@@ -20,6 +20,11 @@ def object_key(tenant_id: str, dataset_name: str, filename: str) -> str:
     return f"{tenant_id}/{dataset_name}/{filename}"
 
 
+def record_key(tenant_id: str, dataset_name: str, path: str) -> str:
+    """records preset: `path` is `<record slug>/record.docx` (one folder per record)."""
+    return f"{tenant_id}/{dataset_name}/{path}"
+
+
 def object_prefix(tenant_id: str, dataset_name: str) -> str:
     return f"{tenant_id}/{dataset_name}/"
 
@@ -84,3 +89,19 @@ class S3Store:
     async def put(self, key: str, body: IO[bytes], content_type: str = "text/csv; charset=utf-8") -> None:
         await self.ensure_bucket()
         await asyncio.to_thread(self._c().upload_fileobj, body, self.bucket, key, ExtraArgs={"ContentType": content_type})
+
+    def _list(self, prefix: str) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for page in self._c().get_paginator("list_objects_v2").paginate(Bucket=self.bucket, Prefix=prefix):
+            for o in page.get("Contents", []) or []:
+                out[o["Key"]] = str(o.get("ETag") or "").strip('"').lower()
+        return out
+
+    async def list_keys(self, prefix: str) -> dict[str, str]:
+        """key → ETag (lower-case, unquoted; MD5 for single-part uploads) of every object under the prefix."""
+        await self.ensure_bucket()
+        return await asyncio.to_thread(self._list, prefix)
+
+    async def delete(self, key: str) -> None:
+        """One DeleteObject per key (no DeleteObjects: it needs Content-MD5, which some S3-compatible servers handle differently)."""
+        await asyncio.to_thread(self._c().delete_object, Bucket=self.bucket, Key=key)

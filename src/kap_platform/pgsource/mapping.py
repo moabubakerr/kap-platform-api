@@ -198,34 +198,80 @@ def normalize(raw: Any, default_id_prefix: str) -> tuple[dict[str, Any] | None, 
     if out.get("domestic_values") and "dimension" not in out:
         problems.append("domestic_values: only used with a dimension column")
 
-    filters = raw.get("filters")
-    if filters is None:
-        out["filters"] = []
-    elif not isinstance(filters, list):
-        problems.append("filters: must be a list")
-    else:
-        clean = []
-        for i, f in enumerate(filters, 1):
-            if not isinstance(f, Mapping):
-                problems.append(f"filters: filter {i} must be an object")
-                continue
-            c = column(f.get("column"), f"filters: filter {i}", True)
-            op = f.get("op")
-            if op not in OPS:
-                problems.append(f"filters: filter {i} has an unknown operator {op!r} (use {', '.join(OPS)})")
-                continue
-            item: dict[str, Any] = {"column": c, "op": op}
-            if op in ("=", "!="):
-                val = f.get("value")
-                if val is None or isinstance(val, (dict, list)):
-                    problems.append(f"filters: filter {i} ({op}) needs a value")
-                    continue
-                item["value"] = ("true" if val else "false") if isinstance(val, bool) else str(val)
-            if c:
-                clean.append(item)
-        out["filters"] = clean
+    clean_filters = normalize_filters(raw.get("filters"), problems)
+    if clean_filters is not None:
+        out["filters"] = clean_filters
 
     return (None, problems) if problems else (out, [])
+
+
+def normalize_filters(filters: Any, problems: list[str]) -> list[dict[str, Any]] | None:
+    """Shape of a `filters` list ([{column, op, value?}]); problems are appended. None when not a list."""
+    if filters is None:
+        return []
+    if not isinstance(filters, list):
+        problems.append("filters: must be a list")
+        return None
+    clean = []
+    for i, f in enumerate(filters, 1):
+        if not isinstance(f, Mapping):
+            problems.append(f"filters: filter {i} must be an object")
+            continue
+        c = f.get("column")
+        if c is None or (isinstance(c, str) and not c.strip()):
+            problems.append(f"filters: filter {i}: choose a column")
+            c = None
+        elif not isinstance(c, str):
+            problems.append(f"filters: filter {i}: must be a column name")
+            c = None
+        else:
+            c = c.strip()
+        op = f.get("op")
+        if op not in OPS:
+            problems.append(f"filters: filter {i} has an unknown operator {op!r} (use {', '.join(OPS)})")
+            continue
+        item: dict[str, Any] = {"column": c, "op": op}
+        if op in ("=", "!="):
+            val = f.get("value")
+            if val is None or isinstance(val, (dict, list)):
+                problems.append(f"filters: filter {i} ({op}) needs a value")
+                continue
+            item["value"] = ("true" if val else "false") if isinstance(val, bool) else str(val)
+        if c:
+            clean.append(item)
+    return clean
+
+
+def check_filters(table: str, filters: Iterable[Mapping[str, Any]], types: Mapping[str, str]) -> list[str]:
+    """Filter columns exist; is_true / is_false need a boolean column. `types`: column → lower-case type."""
+    problems: list[str] = []
+    for f in filters:
+        t = types.get(f["column"])
+        if t is None:
+            problems.append(f'filters: column "{f["column"]}" does not exist in {table}')
+        elif f["op"] in ("is_true", "is_false") and t not in BOOL_TYPES:
+            problems.append(f'filters: column "{f["column"]}" is {t}; {f["op"]} needs a boolean column')
+    return problems
+
+
+def where_clause(filters: Iterable[Mapping[str, Any]], args: list[Any]) -> str:
+    """'\\n where …' for checked filters ('' when none); filter values are appended to `args` as $n parameters."""
+    conds: list[str] = []
+    for f in filters:
+        c = quote_ident(f["column"])
+        if f["op"] == "=":
+            args.append(f["value"])
+            conds.append(f"{c}::text = ${len(args)}")
+        elif f["op"] == "!=":
+            args.append(f["value"])
+            conds.append(f"{c}::text is distinct from ${len(args)}")
+        elif f["op"] == "is_true":
+            conds.append(f"{c} is true")
+        elif f["op"] == "is_false":
+            conds.append(f"{c} is false")
+        else:
+            conds.append(f"{c} is not null")
+    return ("\n where " + "\n   and ".join(conds)) if conds else ""
 
 
 # ---------------------------------------------------------------- column validation
@@ -269,10 +315,7 @@ def check_columns(m: Mapping[str, Any], columns: Iterable[Mapping[str, Any]]) ->
         if "column" in m.get(label, {}):
             known(label, m[label]["column"])
 
-    for f in m["filters"]:
-        t = known("filters", f["column"])
-        if t is not None and f["op"] in ("is_true", "is_false") and t not in BOOL_TYPES:
-            problems.append(f'filters: column "{f["column"]}" is {t}; {f["op"]} needs a boolean column')
+    problems += check_filters(m["table"], m["filters"], types)
     return problems
 
 
@@ -297,23 +340,8 @@ def build_sql(m: Mapping[str, Any], schema: str, table: str) -> GeneratedSql:
     source = f"{quote_ident(schema)}.{quote_ident(table)}"
     period = quote_ident(m["period"]["column"])
 
-    conds: list[str] = []
     args: list[str] = []
-    for f in m["filters"]:
-        c = quote_ident(f["column"])
-        if f["op"] == "=":
-            args.append(f["value"])
-            conds.append(f"{c}::text = ${len(args)}")
-        elif f["op"] == "!=":
-            args.append(f["value"])
-            conds.append(f"{c}::text is distinct from ${len(args)}")
-        elif f["op"] == "is_true":
-            conds.append(f"{c} is true")
-        elif f["op"] == "is_false":
-            conds.append(f"{c} is false")
-        else:
-            conds.append(f"{c} is not null")
-    where = ("\n where " + "\n   and ".join(conds)) if conds else ""
+    where = where_clause(m["filters"], args)
 
     group = [f"{quote_ident(k)}::text as k{i}" for i, k in enumerate(m["series_key"])]
     if "column" in m["frequency"]:

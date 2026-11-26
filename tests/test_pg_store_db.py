@@ -57,6 +57,22 @@ async def test_sources_datasets_runs(st):
         await st.create_dataset(TENANT, {"source_id": src["id"], "name": "kpi2", "preset": "mapped", "collection_name": "kpi_coll2"})
     await st.delete_dataset(TENANT, mapped["id"])
 
+    # migration 0005: preset records + records jsonb (required for records)
+    rec = {"table": "public.tickets", "id_column": "id", "title": "Ticket {id}", "fields": [{"column": "status", "label": "Status"}], "sections": [], "filters": [], "max_records": 5000, "language": "en"}
+    rds = await st.create_dataset(TENANT, {"source_id": src["id"], "name": "tickets", "preset": "records", "records": rec, "collection_name": "tickets_c"})
+    assert rds["records"] == rec and rds["preset"] == "records" and ds["records"] is None
+    with pytest.raises(asyncpg.CheckViolationError):
+        await st.create_dataset(TENANT, {"source_id": src["id"], "name": "tickets2", "preset": "records", "collection_name": "tickets_c2"})
+    with pytest.raises(asyncpg.CheckViolationError):
+        await st.create_dataset(TENANT, {"source_id": src["id"], "name": "x", "preset": "bogus", "collection_name": "x_coll"})
+    rrun = await st.create_run(TENANT, rds["id"], "manual", initial_steps("records"))
+    assert rrun["dataset_preset"] == "records" and rrun["steps"][1]["title"] == "Write record documents"
+    await st.update_run(rrun["id"], status="failed", file_hashes={"1/record.docx": "h"}, uploaded_at=datetime.now(timezone.utc), finished_at=datetime.now(timezone.utc))
+    rrun2 = await st.create_run(TENANT, rds["id"], "manual", initial_steps("records"))
+    assert await st.last_upload_hashes(rds["id"], rrun2["id"]) == {"1/record.docx": "h"}  # a failed run that finished its upload counts
+    assert await st.last_success_hashes(rds["id"], rrun2["id"]) is None
+    await st.delete_dataset(TENANT, rds["id"])
+
     due = await st.due_datasets()
     assert due == [{"id": ds["id"], "tenant_id": TENANT}] and await st.due_datasets() == []
 

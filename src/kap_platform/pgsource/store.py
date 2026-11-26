@@ -28,7 +28,7 @@ _CONSTRAINT_MESSAGES = {
 }
 
 SOURCE_FIELDS = ("name", "host", "port", "database", "username", "password_enc", "sslmode", "last_test")
-DATASET_FIELDS = ("source_id", "name", "preset", "queries", "mapping", "published_only", "collection_name", "schedule_minutes", "kap", "next_run_at")
+DATASET_FIELDS = ("source_id", "name", "preset", "queries", "mapping", "records", "published_only", "collection_name", "schedule_minutes", "kap", "next_run_at")
 RUN_FIELDS = ("status", "steps", "counts", "files", "file_hashes", "kap", "uploaded_at", "polls", "error", "started_at", "finished_at")
 
 _SOURCE_SELECT = """
@@ -36,15 +36,15 @@ select id::text, tenant_id::text, name, host, port, database, username, password
   from pg_source
 """
 _DATASET_SELECT = """
-select d.id::text, d.tenant_id::text, d.source_id::text, s.name as source_name, d.name, d.preset, d.queries, d.mapping,
+select d.id::text, d.tenant_id::text, d.source_id::text, s.name as source_name, d.name, d.preset, d.queries, d.mapping, d.records,
        d.published_only, d.collection_name, d.schedule_minutes, d.kap, d.next_run_at, d.created_at, d.updated_at,
        (select jsonb_build_object('id', r.id, 'status', r.status, 'finished_at', r.finished_at)
           from pg_export_run r where r.dataset_id = d.id order by r.created_at desc limit 1) as last_run
   from pg_dataset d join pg_source s on s.id = d.source_id
 """
 _RUN_SELECT = """
-select r.id::text, r.tenant_id::text, r.dataset_id::text, d.name as dataset_name, r.trigger, r.status, r.steps,
-       r.counts, r.files, r.file_hashes, r.kap, r.uploaded_at, r.polls, r.error, r.created_at, r.started_at, r.finished_at
+select r.id::text, r.tenant_id::text, r.dataset_id::text, d.name as dataset_name, d.preset as dataset_preset, r.trigger, r.status, r.steps,
+       r.counts, r.files, r.kap, r.uploaded_at, r.polls, r.error, r.created_at, r.started_at, r.finished_at
   from pg_export_run r join pg_dataset d on d.id = r.dataset_id
 """
 
@@ -194,5 +194,13 @@ class PgStore:
     async def last_success_hashes(self, dataset_id: str, exclude_run_id: str) -> dict[str, str] | None:
         return await self.pool.fetchval(
             "select file_hashes from pg_export_run where dataset_id = $1 and id <> $2 and status = 'succeeded' and file_hashes is not null order by created_at desc limit 1",
+            dataset_id, exclude_run_id,
+        )
+
+    async def last_upload_hashes(self, dataset_id: str, exclude_run_id: str) -> dict[str, str] | None:
+        """records preset: hashes of the newest run whose upload finished (S3 holds exactly these documents),
+        whatever KAP did with them afterwards."""
+        return await self.pool.fetchval(
+            "select file_hashes from pg_export_run where dataset_id = $1 and id <> $2 and uploaded_at is not null and file_hashes is not null order by created_at desc limit 1",
             dataset_id, exclude_run_id,
         )

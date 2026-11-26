@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 import asyncpg
 
-from . import mapping, presets
+from . import mapping, presets, records
 from .kapcsv import FILES, HEADERS, ColumnError, CsvOutput, column_map, format_value, remap
 from .source import SourceSession, SqlRejected, check_select
 
@@ -117,7 +117,33 @@ def _fmt(rows: list[list[Any]]) -> list[list[str]]:
     return [[format_value(v) for v in r] for r in rows]
 
 
+async def read_records(session: SourceSession, dataset: Mapping[str, Any]) -> records.RecordsRead:
+    """records preset: the cards to export (ExportError when the spec cannot be used)."""
+    try:
+        rr = await records.read(session, dataset.get("records"))
+    except asyncpg.PostgresError as exc:
+        raise ExportError(f"The records query failed: {exc}") from exc
+    if rr.cards is None:
+        raise ExportError("The records definition cannot be used: " + "; ".join(rr.problems))
+    return rr
+
+
+async def preview_records(session: SourceSession, raw: Any, limit: int = records.PREVIEW_SAMPLE) -> dict[str, Any]:
+    """{documents: {count, sample: [{key, title, text}]}, problems, query}; nothing is rendered or uploaded."""
+    limit = max(1, min(limit, records.PREVIEW_SAMPLE))
+    try:
+        rr = await records.preview(session, raw, limit)
+    except asyncpg.PostgresError as exc:
+        return {"documents": {"count": 0, "sample": []}, "problems": [f"The records query failed: {exc}"], "query": None}
+    if rr.cards is None:
+        return {"documents": {"count": 0, "sample": []}, "problems": rr.problems, "query": None}
+    sample = [{"key": c.path, "title": c.title, "text": c.text()} for c in rr.cards[:limit]]
+    return {"documents": {"count": rr.total or 0, "sample": sample}, "problems": rr.problems, "query": rr.query}
+
+
 async def preview(session: SourceSession, dataset: Mapping[str, Any], limit: int = PREVIEW_ROWS) -> dict[str, Any]:
+    if dataset["preset"] == "records":
+        return await preview_records(session, dataset.get("records"), min(limit, records.PREVIEW_SAMPLE))
     files: dict[str, Any] = {}
     problems: list[str] = []
     if dataset["preset"] == "mapped":

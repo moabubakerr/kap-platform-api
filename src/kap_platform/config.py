@@ -89,7 +89,10 @@ class Settings(BaseSettings):
     s3_region: str = "us-east-1"
     pg_export_poll_s: int = 10  # how often an export checks KAP for its pipeline job
     pg_export_wait_s: int = 900  # give up waiting for KAP after this long
+    pg_export_records_wait_s: int = 3600  # records preset: KAP summarises every new/changed record with the model
+    pg_export_records_settle_s: int = 180  # records: all jobs done but none started after the upload → wait this long for a last scan
     kap_embedding_model_ref: str = "embed_default"  # pipelines the platform creates
+    kap_chat_model_ref: str = "chat_default"  # records preset: summary model (pipeline + collection)
 
     def tenants(self) -> list[Tenant]:
         return load_tenants(self.tenants_file)

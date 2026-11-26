@@ -77,13 +77,14 @@ Pages and errors follow KAP's conventions (`items/total/limit/offset/has_next`, 
 Exports tables from a customer PostgreSQL database into KAP's indicator CSV format
 (`registry.csv`, `observations.csv`, `narratives.csv`: UTF-8 with BOM, comma, `.` decimals,
 RFC 4180), uploads them to S3 and lets KAP's own S3 connector and `indicators` pipeline load
-them. Code: `src/kap_platform/pgsource/`, tables: `migrations/0003_pg_source.sql`, `0004_pg_mapping.sql`.
+them — or, with preset `records`, turns each row into a Word document for a KAP document collection.
+Code: `src/kap_platform/pgsource/`, tables: `migrations/0003_pg_source.sql`, `0004_pg_mapping.sql`, `0005_pg_records.sql`.
 
 - **Source** — host, port, database, read-only login, sslmode. The password is stored encrypted
   (Fernet, `PLATFORM_SECRET_KEY`) and never returned (`password_set: true`). Every session is a
   `READ ONLY` transaction, `statement_timeout` 60 s, connect timeout 10 s. `test` lists readable
   tables; `preview` runs one SELECT/WITH (≤ 50 rows).
-- **Dataset** — a source + preset + target KAP collection (+ optional schedule in minutes). Three presets:
+- **Dataset** — a source + preset + target KAP collection (+ optional schedule in minutes). Four presets:
   - `scai_indicators`: built-in SQL for the scai-chatbot schema. One series per published indicator
     detail × granularity × geography in `indicator_values`; id
     `cms.<PublishedIndicatorDetailId, lower-case, no dashes>.<a|q|m>.overall` for Qatar (blank/`Qatar`
@@ -111,6 +112,51 @@ them. Code: `src/kap_platform/pgsource/`, tables: `migrations/0003_pg_source.sql
     `domestic_values` (case-insensitive) form the main series (`overall`, blank dimension); others get
     their own series named "Name (Dimension)". Rows without value and target, bad periods, unmapped
     frequencies and duplicates (last kept) are counted in `problems`. Narratives: header only.
+  - `records`: text-heavy tables (tickets, contracts, products, FAQs) → searchable documents. Each row
+    of one table/view becomes a small Word document (a "record card") in a KAP **document** collection
+    that agents search with `hybrid_search`. Dataset field `records` (jsonb):
+    ```
+    {table: "schema.name", id_column: col (unique per row), title: "Ticket {ticket_id}" ({column} placeholders),
+     fields: [{column, label}] (short "Label: value" lines), sections: [{column, label}] (long text under a heading),
+     filters?: [...same as mapped], order_by?: {column, desc}, max_records: 1–50000 (default 5000), language?: "en"|"ar"}
+    ```
+    Same safety as `mapped` (readable table, columns checked, quoted identifiers, `$n` filter values).
+    The query selects the id + shown columns, `order by <order_by> nulls last, <id>`, `limit max_records + 1`
+    (more rows → the first `max_records` are exported and `problems` says so); empty and repeated ids are
+    left out and counted. The card: Heading 1 = title, one bold "Label: value" paragraph per field,
+    Heading 2 + paragraphs (split on blank lines) per section, a last line "Source: <table> · record <id>".
+    Empty values drop their line/section; dates ISO, numbers as is, booleans Yes/No. `ar` makes every
+    paragraph right-to-left. The .docx bytes are deterministic (fixed core properties, zip re-packed with
+    1980-01-01 timestamps and a stable entry order), so an unchanged row gives an identical file.
+    - **One record per folder**: `s3://<bucket>/<tenant_id>/<dataset>/<slug>/record.docx`. `hybrid_search`
+      returns one summary per document group, and the collection groups by folder at depth 1 below the
+      connector prefix; with many documents in one folder the group summary dropped details on the stand
+      (Nov 2026), so every record gets its own folder = its own group and summary. Slug: lower-case
+      `[a-z0-9]` runs joined by `_`, ≤ 64 chars; when that changed or truncated the id an 8-char hash of
+      the id is appended, so distinct ids never share a folder.
+    - **Run**: `read` → `write`: a content hash per record (what the card shows + a renderer version) is
+      compared with the hashes stored by the last run that finished its upload and with the objects listed
+      under the prefix (without a stored hash: a fresh render's MD5 vs the ETag; multipart ETags never
+      match) → `upload`: **new** and **changed** documents are rendered (python-docx, ~30 ms each) and
+      uploaded, folders of records that no longer exist are **removed** (KAP drops the file at its next
+      scan), **unchanged** ones are neither rendered nor touched (KAP does not reprocess them). Nothing
+      new/changed/removed → `kap_scan` / `kap_load` are skipped. Otherwise the watcher follows every pipeline job of the collection created since the
+      upload began (a scan during a long upload starts several), with backoff (10 s, +10 s per minute of
+      polling, ≤ 60 s): ≤ 15 min for the first job, ≤ 60 min overall (`PLATFORM_PG_EXPORT_RECORDS_WAIT_S`).
+      Run `counts: {documents, new, changed, removed, unchanged}`, `files`: the first 20 uploaded documents.
+    - **Cost**: KAP summarises every new or changed record with the chat model (`chat_default`), once per
+      document and once per group — so roughly two model calls per changed record and run. The first
+      load of 5000 records is 5000 documents to summarise and takes a while; later runs only pay for
+      the rows that changed. Keep `fields` / `sections` to what agents need: any change to a shown column
+      (or to the spec: labels, title, language) changes every affected document and re-summarises it.
+    - **KAP objects**: connector `<collection>_pg` (include `**/*.docx`), pipeline `<collection>_pipeline`
+      (kind `document`: `parse` docx → markdown with headings/lists/tables kept → `summarize_document`
+      transformer with a `summary` task → `embed`, `embed_default`, chunks 800/120), collection
+      `<collection>` with `entity` on: type `indicator_document_context` (or `document_group`, created
+      when the tenant has neither), folder boundary at depth 1, id `{collection_id}:{relative_folder_path}`,
+      group summary by `chat_default`. Prompts as in the console (`kap-console/src/features/v35/data/search.ts`).
+      Switching a dataset between `records` and an indicator preset re-provisions; an existing pipeline of
+      the other kind under the same name is refused (choose another collection name).
 - **Run** (`pg_export` job): `read` → `write` → `upload` to `s3://<bucket>/<tenant_id>/<dataset>/<file>.csv`
   (fixed keys, so each run is a new file version in KAP) → `kap_scan` (KAP's connector, scanning every
   minute, starts a pipeline job) → `kap_load` (that job's progress and result). The worker polls KAP
@@ -151,8 +197,9 @@ user `kap_platform_ro`, sslmode `disable`; preset `scai_indicators`.
 | POST | `/api/t/{tid}/pg-sources/{id}/preview` | `{sql, limit≤50}` → `{columns, rows, truncated}` |
 | GET | `/api/t/{tid}/pg-sources/{id}/columns?table=schema.name` | `{table, columns: [{name, type, nullable}]}`; 404 for a table the login cannot read |
 | POST | `/api/t/{tid}/pg-sources/{id}/mapping-preview` | `{mapping, limit?, name?}` → like a dataset preview, nothing saved |
-| POST/GET | `/api/t/{tid}/pg-datasets[?source_id=]` | create / list datasets (`mapping` for preset `mapped`; `queries` ignored there) |
+| POST | `/api/t/{tid}/pg-sources/{id}/records-preview` | `{records, name?, limit≤5}` → `{documents: {count, sample: [{key, title, text}]}, problems, query}`, nothing saved or uploaded |
+| POST/GET | `/api/t/{tid}/pg-datasets[?source_id=]` | create / list datasets (`mapping` for preset `mapped`, `records` for preset `records`; `queries` ignored there) |
 | GET/PATCH/DELETE | `/api/t/{tid}/pg-datasets/{id}` | |
-| POST | `/api/t/{tid}/pg-datasets/{id}/preview` | first rows + counts of the three files, `problems`; `mapped` also `queries: {registry, observations}` (the generated SQL) |
+| POST | `/api/t/{tid}/pg-datasets/{id}/preview` | first rows + counts of the three files, `problems`; `mapped` also `queries: {registry, observations}` (the generated SQL); `records`: like records-preview |
 | POST | `/api/t/{tid}/pg-datasets/{id}/run` | 201 export run (409 while one is active) |
 | GET | `/api/t/{tid}/pg-exports[?dataset_id=]`, `/api/t/{tid}/pg-exports/{id}` | runs, newest first |

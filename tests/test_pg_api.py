@@ -13,7 +13,7 @@ AUTH = {"Authorization": "Bearer k1"}
 BASE = f"/api/t/{SBX}"
 SOURCE = {"name": "scai", "host": "scai-chatbot-postgres-1", "port": 5432, "database": "scai_indicators", "username": "kap_platform_ro", "password": "pw", "sslmode": "disable"}
 SOURCE_KEYS = {"id", "name", "host", "port", "database", "username", "sslmode", "password_set", "last_test", "created_at", "updated_at"}
-DATASET_KEYS = {"id", "source_id", "source_name", "name", "preset", "queries", "mapping", "published_only", "collection_name", "schedule_minutes", "next_run_at", "kap", "last_run", "created_at", "updated_at"}
+DATASET_KEYS = {"id", "source_id", "source_name", "name", "preset", "queries", "mapping", "records", "published_only", "collection_name", "schedule_minutes", "next_run_at", "kap", "last_run", "created_at", "updated_at"}
 RUN_KEYS = {"id", "dataset_id", "dataset_name", "trigger", "status", "created_at", "started_at", "finished_at", "steps", "counts", "files", "kap", "error"}
 PAGE_KEYS = {"items", "total", "limit", "offset", "has_next"}
 

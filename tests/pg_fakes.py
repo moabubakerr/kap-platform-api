@@ -114,11 +114,28 @@ def opener_for(session: FakeSession, opened: list | None = None):
 
 # ---------------------------------------------------------------- S3
 class FakeS3:
+    """`etags` overrides the listed ETag of a key (default: MD5 of the bytes, like a single-part upload)."""
+
     def __init__(self):
         self.objects: dict[str, bytes] = {}
+        self.types: dict[str, str] = {}
+        self.etags: dict[str, str] = {}
+        self.puts: list[str] = []
+        self.deletes: list[str] = []
 
     async def put(self, key: str, body, content_type: str = "text/csv; charset=utf-8") -> None:
         self.objects[key] = body.read()
+        self.types[key] = content_type
+        self.etags.pop(key, None)
+        self.puts.append(key)
+
+    async def list_keys(self, prefix: str) -> dict[str, str]:
+        import hashlib
+        return {k: self.etags.get(k, hashlib.md5(v).hexdigest()) for k, v in self.objects.items() if k.startswith(prefix)}
+
+    async def delete(self, key: str) -> None:
+        self.objects.pop(key, None)
+        self.deletes.append(key)
 
 
 # ---------------------------------------------------------------- KAP
@@ -127,7 +144,7 @@ class FakeKap:
 
     def __init__(self, tenants=(SBX,)):
         self.tenants = set(tenants)
-        self.objects: dict[str, list[dict[str, Any]]] = {"connectors": [], "pipelines": [], "collections": []}
+        self.objects: dict[str, list[dict[str, Any]]] = {"connectors": [], "pipelines": [], "collections": [], "entity-types": []}
         self.jobs: list[dict[str, Any]] = []
         self.files: list[dict[str, Any]] = []
         self.calls: list[tuple[str, str, Any]] = []
@@ -209,7 +226,7 @@ class MemoryStore:
             if d["tenant_id"] == tenant_id and (d["name"] == fields["name"] or d["collection_name"] == fields["collection_name"]):
                 raise Conflict("A dataset with this name already exists.")
         did = str(uuid.uuid4())
-        row = {"id": did, "tenant_id": tenant_id, "queries": {}, "mapping": None, "published_only": True, "schedule_minutes": None, "kap": None, "next_run_at": None, **fields, "created_at": now(), "updated_at": now()}
+        row = {"id": did, "tenant_id": tenant_id, "queries": {}, "mapping": None, "records": None, "published_only": True, "schedule_minutes": None, "kap": None, "next_run_at": None, **fields, "created_at": now(), "updated_at": now()}
         self.db["datasets"][did] = row
         return self._ds(row)
 
@@ -242,6 +259,7 @@ class MemoryStore:
     def _run(self, r):
         out = copy.deepcopy(r)
         out["dataset_name"] = self.db["datasets"][r["dataset_id"]]["name"]
+        out["dataset_preset"] = self.db["datasets"][r["dataset_id"]]["preset"]
         return out
 
     async def create_run(self, tenant_id, dataset_id, trigger, steps):
@@ -268,6 +286,10 @@ class MemoryStore:
 
     async def last_success_hashes(self, dataset_id, exclude_run_id):
         rows = sorted((r for r in self.db["runs"].values() if r["dataset_id"] == dataset_id and r["id"] != exclude_run_id and r["status"] == "succeeded" and r["file_hashes"]), key=lambda r: r["created_at"])
+        return rows[-1]["file_hashes"] if rows else None
+
+    async def last_upload_hashes(self, dataset_id, exclude_run_id):
+        rows = sorted((r for r in self.db["runs"].values() if r["dataset_id"] == dataset_id and r["id"] != exclude_run_id and r["uploaded_at"] and r["file_hashes"]), key=lambda r: r["created_at"])
         return rows[-1]["file_hashes"] if rows else None
 
 

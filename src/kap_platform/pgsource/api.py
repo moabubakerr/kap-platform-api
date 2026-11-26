@@ -6,6 +6,7 @@
   POST                /api/t/{tid}/pg-sources/{id}/preview
   GET                 /api/t/{tid}/pg-sources/{id}/columns?table=schema.name
   POST                /api/t/{tid}/pg-sources/{id}/mapping-preview
+  POST                /api/t/{tid}/pg-sources/{id}/records-preview
   POST/GET            /api/t/{tid}/pg-datasets
   GET/PATCH/DELETE    /api/t/{tid}/pg-datasets/{id}
   POST                /api/t/{tid}/pg-datasets/{id}/preview
@@ -25,13 +26,13 @@ from pydantic import BaseModel, Field
 
 from ..config import Settings
 from ..kap.client import KapClient
-from . import build, export, mapping
+from . import build, export, mapping, records
 from .secrets import SecretBox, SecretKeyMissing
 from .source import PREVIEW_MAX, SourceUnavailable, SqlRejected, check_select, jsonable
 from .store import Conflict, InUse
 
 SslMode = Literal["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]
-Preset = Literal["scai_indicators", "custom", "mapped"]
+Preset = Literal["scai_indicators", "custom", "mapped", "records"]
 NAME = r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,99}$"
 DATASET_NAME = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"  # part of the S3 key
 COLLECTION_NAME = r"^[A-Za-z0-9_]{4,29}$"  # KAP: [A-Za-z0-9_], 4–32 chars; the connector adds "_pg"
@@ -75,6 +76,7 @@ class DatasetIn(BaseModel):
     preset: Preset
     queries: Queries | None = None
     mapping: dict[str, Any] | None = None  # preset mapped; shape checked by mapping.normalize
+    records: dict[str, Any] | None = None  # preset records; shape checked by records.normalize
     published_only: bool = True
     collection_name: str = Field(pattern=COLLECTION_NAME)
     schedule_minutes: int | None = Field(None, ge=1, le=60 * 24 * 31)
@@ -86,6 +88,7 @@ class DatasetPatch(BaseModel):
     preset: Preset | None = None
     queries: Queries | None = None
     mapping: dict[str, Any] | None = None
+    records: dict[str, Any] | None = None
     published_only: bool | None = None
     collection_name: str | None = Field(None, pattern=COLLECTION_NAME)
     schedule_minutes: int | None = Field(None, ge=1, le=60 * 24 * 31)
@@ -95,6 +98,12 @@ class MappingPreviewIn(BaseModel):
     mapping: dict[str, Any]
     limit: int = Field(build.PREVIEW_ROWS, ge=1, le=PREVIEW_MAX)
     name: str | None = Field(None, pattern=DATASET_NAME)  # optional: the default id_prefix, as the dataset would get it
+
+
+class RecordsPreviewIn(BaseModel):
+    records: dict[str, Any]
+    name: str | None = Field(None, pattern=DATASET_NAME)  # accepted for symmetry with mapping-preview; not used
+    limit: int = Field(records.PREVIEW_SAMPLE, ge=1, le=records.PREVIEW_SAMPLE)
 
 
 # ---------------------------------------------------------------- output shapes
@@ -110,7 +119,8 @@ def dataset_out(r: dict[str, Any]) -> dict[str, Any]:
     kap = r.get("kap")
     return {
         "id": r["id"], "source_id": r["source_id"], "source_name": r.get("source_name"), "name": r["name"], "preset": r["preset"],
-        "queries": r.get("queries") or {}, "mapping": r.get("mapping") if r["preset"] == "mapped" else None, "published_only": r["published_only"], "collection_name": r["collection_name"],
+        "queries": r.get("queries") or {}, "mapping": r.get("mapping") if r["preset"] == "mapped" else None,
+        "records": r.get("records") if r["preset"] == "records" else None, "published_only": r["published_only"], "collection_name": r["collection_name"],
         "schedule_minutes": r.get("schedule_minutes"), "next_run_at": r.get("next_run_at"),
         "kap": {k: kap.get(k) for k in KAP_KEYS} if kap else None,
         "last_run": r.get("last_run"), "created_at": r["created_at"], "updated_at": r["updated_at"],
@@ -123,8 +133,8 @@ def run_out(r: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": r["id"], "dataset_id": r["dataset_id"], "dataset_name": r.get("dataset_name"), "trigger": r["trigger"], "status": r["status"],
         "created_at": r["created_at"], "started_at": r.get("started_at"), "finished_at": r.get("finished_at"),
-        "steps": r.get("steps") or export.initial_steps(),
-        "counts": {k: counts.get(k) for k in ("registry", "observations", "narratives")},
+        "steps": r.get("steps") or export.initial_steps(r.get("dataset_preset")),
+        "counts": {k: counts.get(k) for k in (export.RECORD_COUNTS if r.get("dataset_preset") == "records" else ("registry", "observations", "narratives"))},
         "files": [{"name": f.get("name"), "key": f.get("key"), "bytes": f.get("bytes")} for f in (r.get("files") or [])],
         "kap": {k: kap.get(k) for k in ("collection", "pipeline_job_id", "state", "progress", "result")} if kap else None,
         "error": r.get("error"),
@@ -287,7 +297,27 @@ def register(app: FastAPI, settings: Settings, require_key: Callable, err: Calla
         except SourceUnavailable as exc:
             raise err(502, "source_unavailable", f"Cannot connect to the source database: {exc}")
 
+    @router.post("/pg-sources/{source_id}/records-preview")
+    async def records_preview(source_id: str, body: RecordsPreviewIn, tid: str = Depends(tenant), st: Any = Depends(store)) -> dict[str, Any]:
+        src = await get_source(st, tid, source_id)
+        try:
+            async with open_session(src) as s:
+                return await build.preview_records(s, body.records, body.limit)
+        except SourceUnavailable as exc:
+            raise err(502, "source_unavailable", f"Cannot connect to the source database: {exc}")
+
     # ------------------------------------------------------------ datasets
+    def _records(preset: str, raw: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Checked records spec for preset records (defaults filled in), else None."""
+        if preset != "records":
+            return None
+        if raw is None:
+            raise err(422, "validation_error", "A records dataset needs a records definition.", {"field": "records", "problems": ["records: required"]})
+        r, problems = records.normalize(raw)
+        if r is None:
+            raise err(422, "validation_error", "The records definition is not valid: " + "; ".join(problems), {"field": "records", "problems": problems})
+        return r
+
     def _mapping(preset: str, raw: dict[str, Any] | None, name: str) -> dict[str, Any] | None:
         """Checked mapping for preset mapped (id_prefix defaults to the dataset name), else None."""
         if preset != "mapped":
@@ -300,7 +330,7 @@ def register(app: FastAPI, settings: Settings, require_key: Callable, err: Calla
         return m
 
     def _queries(preset: str, q: Queries | dict | None) -> dict[str, str]:
-        if preset == "mapped":
+        if preset in ("mapped", "records"):
             return {}
         data = q.model_dump() if isinstance(q, Queries) else dict(q or {})
         data = {k: v for k, v in data.items() if v and v.strip()}
@@ -325,7 +355,7 @@ def register(app: FastAPI, settings: Settings, require_key: Callable, err: Calla
             raise err(422, "validation_error", "source_id does not name a source of this tenant.", {"field": "source_id"})
         fields = {
             "source_id": body.source_id, "name": body.name, "preset": body.preset, "queries": _queries(body.preset, body.queries),
-            "mapping": _mapping(body.preset, body.mapping, body.name), "published_only": body.published_only, "collection_name": body.collection_name,
+            "mapping": _mapping(body.preset, body.mapping, body.name), "records": _records(body.preset, body.records), "published_only": body.published_only, "collection_name": body.collection_name,
             "schedule_minutes": body.schedule_minutes, "next_run_at": _next_run(body.schedule_minutes),
         }
         try:
@@ -365,11 +395,13 @@ def register(app: FastAPI, settings: Settings, require_key: Callable, err: Calla
             fields["queries"] = _queries(preset, body.queries if "queries" in given else ds.get("queries"))
         if "mapping" in given or "preset" in fields:
             fields["mapping"] = _mapping(preset, body.mapping if "mapping" in given else ds.get("mapping"), fields.get("name", ds["name"]))
+        if "records" in given or "preset" in fields:
+            fields["records"] = _records(preset, body.records if "records" in given else ds.get("records"))
         if "schedule_minutes" in given and body.schedule_minutes != ds.get("schedule_minutes"):
             fields["schedule_minutes"] = body.schedule_minutes
             fields["next_run_at"] = _next_run(body.schedule_minutes)
-        if fields.keys() & {"name", "collection_name"}:
-            fields["kap"] = None  # new S3 prefix / KAP names: provision again on the next run
+        if fields.keys() & {"name", "collection_name"} or ("preset" in fields and (preset == "records") != (ds["preset"] == "records")):
+            fields["kap"] = None  # new S3 prefix / KAP names / pipeline kind: provision again on the next run
         try:
             return dataset_out(await st.update_dataset(tid, dataset_id, fields))
         except Conflict as exc:
