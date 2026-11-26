@@ -1,0 +1,7 @@
+question,expected,must_include,must_not_include,tags
+"What was the non-revenue water rate in June 2026, and did it meet the target?","16.4% in June 2026 against a target of 15%; the target was not met.","16.4;15","I don't know",route-kpi
+"What were the average outage minutes per customer in Q2 2026?","36.8 minutes per customer in Q2 2026, against a target of 35.","36.8","I don't know",route-kpi
+"What is the population of North Harbour district?","84,500 people (21,300 households).","84,500","I don't know",route-district
+"What is the Smart Meter Rollout project in South Plains district?","18,000 smart meters by December 2026; 6,500 installed by June 2026.","18,000","I don't know",route-district
+"What caused the power failure incident at the West Marina pumping station?","The single power feed failed and the backup generator did not start; 5,400 customers were without water for 2 hours.","generator","I don't know",route-incident
+"What happened in the Corniche Road burst incident?","A corroded 1974 cast-iron main burst on 11 February 2026; 3,200 customers lost supply for 7 hours.","3,200","I don't know",route-incident

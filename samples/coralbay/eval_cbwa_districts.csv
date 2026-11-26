@@ -1,0 +1,7 @@
+question,expected,must_include,must_not_include,tags
+"What is the population of North Harbour?","North Harbour has a population of 84,500 (21,300 households).","84,500","I don't know",population
+"What is the Smart Meter Rollout in South Plains?","It installs 18,000 smart meters in South Plains by December 2026 so that losses and illegal connections show up within days; 6,500 were installed by June 2026.","18,000;December 2026","I don't know",project
+"Why do homes on the East Ridge hilltop have low pressure, and what was done about it?","They sit above the reservoir level; the Ridge Booster Station opened in March 2026 to raise the pressure.","Ridge Booster Station;March 2026","I don't know",challenge;project
+"What is the budget of the Harbour Mains Renewal and when will it finish?","The Harbour Mains Renewal has a budget of 12.4 million and is due to finish in Q3 2026.","12.4;Q3 2026","I don't know",project
+"What threatens the coastal wells in West Marina?","Saltwater intrusion; the Marina Coastal Wall, due in 2027, will protect the wells.","saltwater | seawater","I don't know",challenge
+"What is the population of Old Town?","Old Town is no longer reported as a separate district: it was merged into North Harbour in 2025, so there is no current figure.","","12,900",inactive

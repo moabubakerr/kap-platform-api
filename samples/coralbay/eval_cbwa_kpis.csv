@@ -1,0 +1,9 @@
+question,expected,must_include,must_not_include,tags
+"What was the water consumption in May 2026?","Water consumption in May 2026 was 5.08 million m³, above the 4.50 target.","5.08","I don't know",consumption
+"What was the non-revenue water rate in June 2026, and did it meet the target?","The non-revenue water rate was 16.4% in June 2026 against a target of 15%, so the target was not met.","16.4;15","I don't know",nrw;target
+"What was the non-revenue water rate in South Plains in June 2026?","South Plains had a non-revenue water rate of 21.7% in June 2026 (target 15%).","21.7","I don't know",nrw;district
+"Were complaints resolved within 48 hours on target in June 2026?","Yes: 90.2% of complaints were resolved within 48 hours in June 2026, just above the 90% target.","90.2;90","I don't know",complaints;target
+"How did water consumption change from January to June 2026?","Water consumption rose from 4.10 million m³ in January 2026 to 5.41 million m³ in June 2026.","4.10;5.41","I don't know",consumption;trend
+"What were the average outage minutes per customer in Q2 2026?","In Q2 2026 customers had on average 36.8 minutes without water, against a target of 35.","36.8","I don't know",outage;quarterly
+"What share of complaints was resolved within 48 hours in July 2026?","There is no published figure for July 2026; the latest published value is 90.2% for June 2026.","","93",complaints;draft
+"ما هي نسبة المياه غير المحتسبة في يونيو 2026؟","بلغت نسبة المياه غير المحتسبة 16.4% في يونيو 2026 مقابل مستهدف 15%.","16.4","",nrw;arabic

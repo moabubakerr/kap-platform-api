@@ -1,0 +1,6 @@
+question,expected,must_include,must_not_include,tags
+"What happened on the Corniche Road in February 2026?","A 400 mm water main burst on 11 February 2026; 3,200 customers were without water for 7 hours. The cause was a corroded cast-iron main laid in 1974.","3,200;7 hours | seven hours","I don't know",burst
+"Why did the West Marina pumping station lose power in May 2026?","Its single power feed failed and the backup generator did not start; 5,400 customers had no water for 2 hours.","generator;5,400","I don't know",power
+"How many customers were affected by the smart meter data outage?","1,450 customers in South Plains: their readings did not reach billing for 6 days because of an expired security certificate.","1,450","I don't know",metering
+"What caused the discoloured water in South Plains?","Sediment stirred up when a valve was opened too quickly; the network was flushed for 32 hours and the water was confirmed safe.","sediment;valve","I don't know",quality
+"Tell me about the chlorine dosing pump calibration incident.","There is no public incident record about a chlorine dosing pump calibration.","","recalibrated",internal
