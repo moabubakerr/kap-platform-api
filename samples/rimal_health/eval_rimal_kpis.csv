@@ -1,0 +1,10 @@
+question,expected,must_include,must_not_include,tags
+"What was the national hospital bed occupancy rate in June 2026?","National bed occupancy was 74.3% in June 2026, below the 85% ceiling.","74.3","I don't know",occupancy
+"What was the hospital bed occupancy rate in the Capital Governorate in June 2026?","The Capital Governorate's bed occupancy was 88.6% in June 2026, above the 85% target.","88.6","I don't know",occupancy;governorate
+"Is the emergency department median wait time on target in June 2026?","No: the median wait was 38 minutes in June 2026 against a target of 30 minutes.","38;30","I don't know",emergency;target
+"How has the waiting time for a first specialist appointment changed since Q1 2025?","It fell from 34 days in Q1 2025 to 21 days in Q2 2026; the target is 14 days.","34;21","I don't know",outpatient;trend
+"What was childhood MMR vaccination coverage in 2025, nationally and in the Southern Governorate?","Coverage was 97.1% nationally in 2025 but 92.4% in the Southern Governorate, below the 95% target.","97.1;92.4","I don't know",vaccination;governorate
+"What share of outpatient consultations used telehealth in Q2 2026?","19.4% of outpatient consultations were held by telehealth in Q2 2026, close to the 20% target.","19.4","I don't know",telehealth
+"What was adult diabetes prevalence in 2025?","Adult diabetes prevalence was 16.6% in 2025, against a target of 15%.","16.6","I don't know",diabetes
+"What was the emergency department median wait time in July 2026?","There is no published figure for July 2026; the latest is 38 minutes for June 2026.","","33",emergency;draft
+"ما نسبة إشغال أسرّة المستشفيات على المستوى الوطني في يونيو 2026؟","بلغت نسبة إشغال الأسرّة 74.3% على المستوى الوطني في يونيو 2026.","74.3","",occupancy;arabic

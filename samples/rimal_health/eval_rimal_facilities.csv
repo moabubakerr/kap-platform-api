@@ -1,0 +1,7 @@
+question,expected,must_include,must_not_include,tags
+"How many beds does Rimal General Hospital have?","Rimal General Hospital has 620 beds.","620","I don't know",capacity
+"What new unit opened at Rimal General Hospital in 2026?","A cardiac unit with 40 beds and two catheterisation labs opened in January 2026.","cardiac;40","I don't know",services
+"What staffing problem does Northern Regional Hospital have?","A shortage of anaesthetists limits operating sessions; three posts have been vacant since 2025.","anaesthetist | anesthetist","I don't know",workforce
+"How does Southern District Hospital reach patients in remote villages?","Through a telehealth hub that links its specialists to 9 primary health centres.","telehealth;9","I don't know",access
+"How many cots does the neonatal intensive care unit at the Coastal Women and Children's Hospital have?","24 cots; it admits about 1,100 babies a year.","24","I don't know",capacity
+"Which services does Old Quarter Hospital offer?","Old Quarter Hospital is not an operating facility; there is no current record of its services.","","maternity",closed

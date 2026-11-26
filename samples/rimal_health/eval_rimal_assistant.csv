@@ -1,0 +1,7 @@
+question,expected,must_include,must_not_include,tags
+"What was the emergency department median wait time in June 2026, and is it on target?","38 minutes in June 2026 against a target of 30; not on target.","38;30","I don't know",route-kpi
+"What was childhood MMR vaccination coverage in 2025?","97.1% nationally in 2025, above the 95% target.","97.1","I don't know",route-kpi
+"How many beds does Rimal General Hospital have?","620 beds.","620","I don't know",route-facility
+"Which clinic serves the villages of the Southern Governorate?","The Wadi Sareer Mobile Clinic, which visits 6 villages twice a week.","Wadi Sareer","I don't know",route-facility
+"Which circular allows telehealth follow-up visits, and how are they paid?","Circular MOH-C-07/2026: insurers cover video follow-up visits at 100% of the in-person rate.","MOH-C-07/2026","I don't know",route-policy
+"What decision launched the MMR catch-up campaign?","Ministerial decision MOH-D-03/2026: a free campaign in the Southern Governorate for 4,800 children, March to May 2026.","MOH-D-03/2026","I don't know",route-policy

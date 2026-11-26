@@ -1,0 +1,7 @@
+question,expected,must_include,must_not_include,tags
+"Can chronic patients have follow-up visits by video, and how are they paid?","Yes. Circular MOH-C-07/2026 (from 1 February 2026) allows video follow-up visits, and insurers must cover them at 100% of the in-person rate.","MOH-C-07/2026;100","I don't know",telehealth
+"How quickly must emergency patients be triaged?","Within 15 minutes of arrival under circular MOH-C-11/2026; category 1 patients are seen immediately.","15 minutes","I don't know",emergency
+"For how many days can chronic medication be dispensed at a time?","Up to 90 days instead of 30, from 1 April 2026 (MOH-C-14/2026); controlled medicines are excluded.","90","I don't know",pharmacy
+"What is the MMR catch-up campaign?","A free campaign in the Southern Governorate from March to May 2026, targeting 4,800 children aged 2 to 12 (decision MOH-D-03/2026).","4,800;Southern","I don't know",vaccination
+"How do private clinics renew their licence now?","Online only through the e-services portal from 1 June 2026; the fee is 1,500 and the licence lasts 2 years.","online;1,500","I don't know",licensing
+"Is there a new pricing rule for imported medicines?","There is no published circular on the pricing of imported medicines.","","six countries",confidential
