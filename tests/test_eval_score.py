@@ -60,6 +60,9 @@ def test_checks_and_decide():
     # grounding is only required when asked for
     strict = score.options_with_defaults({"min_grounding": 4})
     assert score.decide("succeeded", "x", [], {"correctness": 5, "grounding": 2, "completeness": 5}, strict)[0] is False
+    # a missing fact with a judge that passed the answer: the judge's note is not a reason for failing
+    miss = score.run_checks("No data for Q1 2026.", ["2.98"], [])
+    assert score.decide("succeeded", "No data for Q1 2026.", miss, {"correctness": 5, "grounding": 5, "completeness": 5, "reason": "Correctly says there is no data."}, opts) == (False, "Missing: 2.98")
     # a judge error does not decide: the checks do
     assert score.decide("succeeded", "Qatar 4.17%", ok, {"error": "timeout"}, opts) == (True, "")
     assert score.decide("failed", "", [], None, opts) == (False, "The agent job failed.")
@@ -112,6 +115,7 @@ def test_judge_messages_and_parsing():
     user = msgs[1]["content"]
     assert "REFERENCE ANSWER:\n2.62% in April 2026" in user and "- 2.62" in user and "EVIDENCE (what" in user and user.endswith("It was 2.62%.")
     assert "EVIDENCE:\n(none)" in build_messages("q", "", [], "a", None)[1]["content"]
+    assert "the reference is the truth even when the evidence is empty" in msgs[0]["content"] and "not found or unavailable" in msgs[0]["content"]
 
     v = parse_verdict('<think>hmm {"x":1}</think>```json\n{"correctness": 4.6, "grounding": null, "completeness": "3", "reason": "Fine"}\n```')
     assert v == {"correctness": 5, "grounding": None, "completeness": 3, "reason": "Fine"}

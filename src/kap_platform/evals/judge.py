@@ -31,7 +31,9 @@ SYSTEM = (
     "You grade answers of an AI assistant. Be strict and literal. "
     "Reply with one JSON object only, no other text:\n"
     '{"correctness": 1-5, "grounding": 1-5 or null, "completeness": 1-5, "reason": "one or two sentences"}\n'
-    "correctness: 5 = says the same as the reference answer (numbers, periods, names); 3 = partly right; 1 = wrong or a refusal. "
+    "correctness: compare the answer with the REFERENCE ANSWER only; the reference is the truth even when the evidence is empty or disagrees. "
+    "5 = says the same as the reference answer (numbers, periods, names); 3 = partly right; 1 = wrong. "
+    "An answer that says the data is missing, not found or unavailable, or refuses, while the reference answer gives a value, is 1. "
     "Without a reference answer, judge it against the evidence. Extra correct detail is fine. "
     "A different number, period or unit than the reference is wrong.\n"
     "grounding: 5 = every fact in the answer is supported by the evidence; 1 = facts that are not in the evidence (made up). "

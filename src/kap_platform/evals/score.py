@@ -160,11 +160,15 @@ def decide(job_status: str | None, answer: str, checks: list[dict[str, Any]], ju
     if judge and not judge.get("error"):
         mc, mg = int(options.get("min_correctness") or 0), int(options.get("min_grounding") or 0)
         c, g = judge.get("correctness"), judge.get("grounding")
+        judge_failed = False
         if mc and isinstance(c, (int, float)) and c < mc:
             reasons.append(f"Judge: correctness {c}/5 (needs {mc})")
+            judge_failed = True
         if mg and isinstance(g, (int, float)) and g < mg:
             reasons.append(f"Judge: grounding {g}/5 (needs {mg})")
-        if reasons and judge.get("reason"):
+            judge_failed = True
+        # the judge's note explains its own verdict: only next to a judge failure, or on a pass
+        if judge_failed and judge.get("reason"):
             reasons.append(str(judge["reason"]))
         if not reasons:
             return True, str(judge.get("reason") or "")
