@@ -11,6 +11,7 @@ Conventions follow KAP so the console sees one platform: pages as
   *    /api/t/{tenant_id}/kap/{path}                      KAP passthrough for the console hubs (kap_proxy.py)
   *    /api/t/{tenant_id}/pg-sources|pg-datasets|pg-exports  PostgreSQL data source (pgsource/api.py)
   *    /api/t/{tenant_id}/eval-sets|eval-runs              evaluations (evals/api.py)
+  *    /api/t/{tenant_id}/workflows|workflow-runs          workflows (workflows/api.py)
 
 Console auth in slice 1 is a static bearer key (PLATFORM_API_KEYS); it is
 replaced by the platform's own users, groups and grants in a later slice.
@@ -30,6 +31,7 @@ from pydantic import BaseModel
 from .. import queue, store
 from ..evals import api as eval_api
 from ..pgsource import api as pg_api
+from ..workflows import api as wf_api
 from . import kap_proxy
 from ..config import Settings
 from ..kap.client import KapClient, KapError
@@ -162,6 +164,9 @@ def create_api(settings: Settings, pool_factory=None, kap_factory=None) -> FastA
 
     # ------------------------------------------------------------ evaluations
     eval_api.register(app, settings, require_key, _err)
+
+    # ------------------------------------------------------------ workflows
+    wf_api.register(app, settings, require_key, _err)
 
     # ------------------------------------------------------------ traces
     @app.get("/api/traces",dependencies=[Depends(require_key)])

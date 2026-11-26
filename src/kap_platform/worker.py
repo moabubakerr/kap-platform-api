@@ -7,6 +7,7 @@ Job kinds (slice 1):
   pg_export        {run_id}                            — export a PostgreSQL dataset to S3 for KAP (pgsource/export.py)
   pg_export_watch  {run_id}                            — follow KAP's pipeline job for that export (re-enqueued every ~10 s)
   eval_watch       {run_id}                            — one tick of an evaluation run (evals/runner.py, re-enqueued every ~5 s)
+  wf_tick          {run_id}                            — one tick of a workflow run (workflows/runner.py)
 
 The scheduler tick (every sync_interval_s) also starts scheduled PostgreSQL exports.
 """
@@ -26,6 +27,7 @@ from .config import Settings
 from .kap.client import KapClient, KapError
 from .evals import runner as eval_runner
 from .pgsource import export as pg_export
+from .workflows import runner as wf_runner
 from .traces.correlate import link_job
 
 log = logging.getLogger(__name__)
@@ -108,6 +110,7 @@ HANDLERS: dict[str, Handler] = {
     "pg_export": pg_export.handle_pg_export,
     "pg_export_watch": pg_export.handle_pg_export_watch,
     "eval_watch": eval_runner.handle_eval_watch,
+    "wf_tick": wf_runner.handle_wf_tick,
 }
 
 

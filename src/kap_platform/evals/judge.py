@@ -107,6 +107,15 @@ class Judge:
             self.model = items[0]["id"]
         return self.model
 
+    async def complete(self, messages: list[dict[str, str]], max_tokens: int = 400) -> str:
+        """One chat completion (temperature 0); the reply text without think blocks. Raises on HTTP errors."""
+        model = await self._model()
+        r = await self._http.post("/v1/chat/completions", json={"model": model, "messages": messages, "temperature": 0, "max_tokens": max_tokens})
+        if r.status_code >= 400:
+            raise RuntimeError(f"model server answered {r.status_code}: {r.text[:200]}")
+        content = ((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        return _THINK.sub("", content).strip()
+
     async def grade(self, question: str, expected: str, must_include: Iterable[str], answer: str, evidence: str | None) -> dict[str, Any]:
         try:
             model = await self._model()
